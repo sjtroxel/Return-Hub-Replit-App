@@ -27,6 +27,7 @@ export interface IStorage {
       status: string;
     }>
   ): Promise<Return | undefined>;
+  deleteReturn(id: string, userId: string): Promise<Return | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -119,6 +120,14 @@ export class DatabaseStorage implements IStorage {
     const [ret] = await db
       .update(returns)
       .set(updateData)
+      .where(and(eq(returns.id, id), eq(returns.userId, userId)))
+      .returning();
+    return ret;
+  }
+
+  async deleteReturn(id: string, userId: string): Promise<Return | undefined> {
+    const [ret] = await db
+      .delete(returns)
       .where(and(eq(returns.id, id), eq(returns.userId, userId)))
       .returning();
     return ret;

@@ -1,0 +1,584 @@
+BUILD FEATURE 2: Advanced Dashboard Controls & Return Management
+
+Match foundation structure and extend Feature 1's form patterns. Fix expired filter logic across frontend + backend.
+
+User Context: High-volume shoppers need to manage dozens of returns efficiently → This dashboard adds search, filtering, sorting, and quick status updates → Transform chaos into a controlled, actionable workflow
+
+What It Does:
+
+    Search bar filters returns by store/item name in real-time
+    Status filter chips (All/Pending/Shipped/Refunded/Expired) with fixed logic
+    Sort dropdown (Deadline soonest, Price highest, Date newest)
+    Click card → edit modal (reuses Feature 1 form styling/validation)
+    Status toggle: Pending → Shipped → Refunded (linear progression)
+    Delete icon with confirmation modal → stats auto-update
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. SEARCH & FILTER UI:
+
+Search Bar (above return cards grid)
+
+<div className="mb-6">
+  <div className="relative">
+    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+    <input
+      type="text"
+      placeholder="Search by store or item name..."
+      className="pl-10 w-full rounded-lg border bg-white dark:bg-gray-800 ..."
+      onChange={(e) => setSearchQuery(e.target.value)}
+    />
+  </div>
+</div>
+
+Filter Chips (below search, horizontal scrollable on mobile)
+
+<div className="flex gap-2 mb-4 overflow-x-auto pb-2">
+  {['All', 'Pending', 'Shipped', 'Refunded', 'Expired'].map(status => (
+    <button
+      className={`chip ${activeFilter === status ? 'chip-active' : 'chip-inactive'}`}
+      onClick={() => setActiveFilter(status)}
+    >
+      {status}
+      {status !== 'All' && <span className="ml-1.5 text-xs">({counts[status]})</span>}
+    </button>
+  ))}
+</div>
+
+Chip Styling:
+
+    Active: Navy background (#000050), white text, subtle shadow
+    Inactive: Light gray bg (light mode) / dark gray (dark mode), theme text color
+    Transition: 200ms ease on click
+    Mobile: whitespace-nowrap, horizontal scroll with hidden scrollbar
+
+Sort Dropdown (right-aligned, lucide-react ChevronDown icon)
+
+<select className="sort-dropdown" onChange={(e) => setSortBy(e.target.value)}>
+  <option value="deadline-asc">Deadline (Soonest First)</option>
+  <option value="price-desc">Price (Highest First)</option>
+  <option value="date-desc">Date Purchased (Newest First)</option>
+</select>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+2. EXPIRED LOGIC FIX:
+
+THE PROBLEM: Frontend shows expired badge, but filter returns 0 results
+
+THE FIX: Unified logic across frontend + backend
+
+Backend (GET /api/returns):
+
+-- Calculate expired status in SQL query
+SELECT 
+  *,
+  CASE 
+    WHEN return_deadline < CURRENT_DATE AND status IN ('pending', 'shipped') 
+    THEN 'expired' 
+    ELSE status 
+  END as computed_status
+FROM returns
+WHERE user_id = $1
+  AND ($2 = 'all' OR computed_status = $2)
+ORDER BY 
+  CASE WHEN $3 = 'deadline-asc' THEN return_deadline END ASC,
+  CASE WHEN $3 = 'price-desc' THEN purchase_price END DESC,
+  CASE WHEN $3 = 'date-desc' THEN purchase_date END DESC
+
+Query Params:
+
+    ?status=expired → filters to computed_status = 'expired'
+    ?sort=deadline-asc → orders by deadline ascending
+    ?search=amazon → WHERE (LOWER(store_name) LIKE '%amazon%' OR LOWER(item_name) LIKE '%amazon%')
+
+Frontend (ReturnCard badge):
+
+const getUrgencyStatus = (deadline, status) => {
+  if (status === 'refunded') return { label: 'Refunded', color: 'gray' };
+  
+  const daysLeft = Math.ceil((new Date(deadline) - new Date()) / (1000 * 60 * 60 * 24));
+  
+  if (daysLeft < 0) return { label: 'Expired', color: 'red' }; // MATCH BACKEND LOGIC
+  if (daysLeft <= 3) return { label: `${daysLeft}d left`, color: 'red' };
+  if (daysLeft <= 7) return { label: `${daysLeft}d left`, color: 'orange' };
+  if (daysLeft <= 14) return { label: `${daysLeft}d left`, color: 'yellow' };
+  return { label: `${daysLeft}d left`, color: 'green' };
+};
+
+Filter Counts (updated in real-time):
+
+const counts = {
+  Pending: returns.filter(r => r.computed_status === 'pending').length,
+  Shipped: returns.filter(r => r.computed_status === 'shipped').length,
+  Refunded: returns.filter(r => r.status === 'refunded').length,
+  Expired: returns.filter(r => {
+    const daysLeft = Math.ceil((new Date(r.return_deadline) - new Date()) / 86400000);
+    return daysLeft < 0 && r.status !== 'refunded';
+  }).length
+};
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+3. RETURN CARD UPDATES:
+
+Card Structure (clickable for edit, status toggle excluded)
+
+<div 
+  className="return-card cursor-pointer hover:shadow-lg transition-all"
+  onClick={() => openEditModal(return)}
+>
+  {/* Existing card content: store name, item, price, deadline badge */}
+  
+  {/* NEW: Status Toggle (prevent click bubbling) */}
+  <div className="mt-3 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
+    <select
+      value={return.status}
+      onChange={(e) => handleStatusChange(return.id, e.target.value)}
+      className="status-select"
+      disabled={return.status === 'refunded'}
+    >
+      <option value="pending">Pending</option>
+      <option value="shipped">Shipped</option>
+      <option value="refunded">Refunded</option>
+    </select>
+    
+    {/* NEW: Delete Icon */}
+    <button
+      onClick={(e) => { e.stopPropagation(); openDeleteModal(return); }}
+      className="text-gray-400 hover:text-red-500 transition-colors"
+      aria-label="Delete return"
+    >
+      <Trash2 size={18} />
+    </button>
+  </div>
+</div>
+
+Status Select Styling:
+
+    Pending: Orange border, orange text
+    Shipped: Blue border, blue text
+    Refunded: Green border, green text, disabled (cannot change once refunded)
+    Transition: 200ms ease on change
+
+Linear Progression:
+
+    Pending → Can select Shipped or Refunded
+    Shipped → Can select Refunded only (cannot go back to Pending)
+    Refunded → Disabled (final state)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+4. EDIT MODAL:
+
+Reuse Feature 1 Form Component (ReturnEntryModal.jsx)
+
+Trigger: Click anywhere on return card (except status select or delete button)
+
+Props to Pass:
+
+<ReturnEntryModal
+  isOpen={editModalOpen}
+  onClose={() => setEditModalOpen(false)}
+  returnToEdit={selectedReturn} // NEW: If present, modal is in "edit mode"
+  onSave={handleReturnUpdated}
+/>
+
+Edit Mode Behavior:
+
+// Inside ReturnEntryModal.jsx
+const isEditMode = !!returnToEdit;
+
+useEffect(() => {
+  if (isEditMode) {
+    setStoreName(returnToEdit.store_name);
+    setItemName(returnToEdit.item_name || '');
+    setPurchasePrice(returnToEdit.purchase_price);
+    setPurchaseDate(returnToEdit.purchase_date);
+  }
+}, [returnToEdit]);
+
+const handleSubmit = async () => {
+  if (isEditMode) {
+    // PUT /api/returns/:id
+    const response = await fetch(`/api/returns/${returnToEdit.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ store_name, item_name, purchase_price, purchase_date })
+    });
+    // ...
+    toast.success("Return updated successfully!");
+  } else {
+    // POST /api/returns (existing logic from Feature 1)
+  }
+};
+
+Modal Title:
+
+    Create mode: "Track New Return"
+    Edit mode: "Edit Return"
+
+Button Text:
+
+    Create mode: "Save Return"
+    Edit mode: "Update Return"
+
+Validation: Same rules as Feature 1 (required fields, no future dates, price > 0)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5. DELETE CONFIRMATION MODAL:
+
+Component: DeleteConfirmModal.jsx
+
+<Dialog open={deleteModalOpen} onOpenChange={setDeleteModalOpen}>
+  <DialogContent className="max-w-md">
+    <DialogHeader>
+      <DialogTitle>Delete Return?</DialogTitle>
+    </DialogHeader>
+    
+    <p className="text-gray-600 dark:text-gray-400">
+      Delete this return from <strong>{returnToDelete?.store_name}</strong>? 
+      This action cannot be undone.
+    </p>
+    
+    <DialogFooter className="flex gap-3">
+      <button 
+        onClick={() => setDeleteModalOpen(false)}
+        className="button-secondary flex-1"
+      >
+        Cancel
+      </button>
+      <button 
+        onClick={confirmDelete}
+        className="button-danger flex-1"
+      >
+        Delete
+      </button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+
+Danger Button Styling:
+
+    Background: #dc2626 (red-600)
+    Hover: #b91c1c (red-700)
+    Text: White
+    Focus ring: Red
+
+Delete Handler:
+
+const confirmDelete = async () => {
+  const response = await fetch(`/api/returns/${returnToDelete.id}`, {
+    method: 'DELETE'
+  });
+  
+  if (response.ok) {
+    setReturns(returns.filter(r => r.id !== returnToDelete.id));
+    setDeleteModalOpen(false);
+    toast.success("Return deleted");
+  } else {
+    toast.error("Failed to delete return");
+  }
+};
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+6. API ROUTES:
+
+GET /api/returns (enhanced with query params)
+
+router.get('/api/returns', authenticateJWT, async (req, res) => {
+  const { status = 'all', sort = 'deadline-asc', search = '' } = req.query;
+  const userId = req.user.id;
+  
+  let query = `
+    SELECT *, 
+      CASE 
+        WHEN return_deadline < CURRENT_DATE AND status IN ('pending', 'shipped') 
+        THEN 'expired' 
+        ELSE status 
+      END as computed_status
+    FROM returns
+    WHERE user_id = $1
+  `;
+  
+  const params = [userId];
+  let paramIndex = 2;
+  
+  // Search filter
+  if (search) {
+    query += ` AND (LOWER(store_name) LIKE $${paramIndex} OR LOWER(item_name) LIKE $${paramIndex})`;
+    params.push(`%${search.toLowerCase()}%`);
+    paramIndex++;
+  }
+  
+  // Status filter (applied after computed_status)
+  if (status !== 'all') {
+    query += ` AND computed_status = $${paramIndex}`;
+    params.push(status.toLowerCase());
+    paramIndex++;
+  }
+  
+  // Sorting
+  if (sort === 'deadline-asc') query += ' ORDER BY return_deadline ASC';
+  else if (sort === 'price-desc') query += ' ORDER BY purchase_price DESC';
+  else if (sort === 'date-desc') query += ' ORDER BY purchase_date DESC';
+  
+  const result = await db.query(query, params);
+  res.json(result.rows);
+});
+
+PUT /api/returns/:id (update status or fields)
+
+router.put('/api/returns/:id', authenticateJWT, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  const { status, store_name, item_name, purchase_price, purchase_date } = req.body;
+  
+  // Verify ownership
+  const checkOwnership = await db.query(
+    'SELECT * FROM returns WHERE id = $1 AND user_id = $2',
+    [id, userId]
+  );
+  
+  if (checkOwnership.rows.length === 0) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+  
+  // Build dynamic update query
+  let updateFields = [];
+  let params = [];
+  let paramIndex = 1;
+  
+  if (status) {
+    updateFields.push(`status = $${paramIndex++}`);
+    params.push(status);
+  }
+  if (store_name !== undefined) {
+    updateFields.push(`store_name = $${paramIndex++}`);
+    params.push(store_name);
+  }
+  if (item_name !== undefined) {
+    updateFields.push(`item_name = $${paramIndex++}`);
+    params.push(item_name);
+  }
+  if (purchase_price !== undefined) {
+    if (purchase_price <= 0) {
+      return res.status(400).json({ error: 'Price must be greater than 0' });
+    }
+    updateFields.push(`purchase_price = $${paramIndex++}`);
+    params.push(purchase_price);
+  }
+  if (purchase_date !== undefined) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (new Date(purchase_date) > today) {
+      return res.status(400).json({ error: 'Future dates not allowed' });
+    }
+    updateFields.push(`purchase_date = $${paramIndex++}`);
+    params.push(purchase_date);
+  }
+  
+  updateFields.push(`updated_at = NOW()`);
+  params.push(id);
+  
+  const query = `
+    UPDATE returns 
+    SET ${updateFields.join(', ')} 
+    WHERE id = $${paramIndex} 
+    RETURNING *
+  `;
+  
+  const result = await db.query(query, params);
+  res.json({ success: true, return: result.rows[0] });
+});
+
+DELETE /api/returns/:id
+
+router.delete('/api/returns/:id', authenticateJWT, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  
+  // Verify ownership
+  const result = await db.query(
+    'DELETE FROM returns WHERE id = $1 AND user_id = $2 RETURNING *',
+    [id, userId]
+  );
+  
+  if (result.rows.length === 0) {
+    return res.status(403).json({ error: 'Unauthorized or not found' });
+  }
+  
+  res.json({ success: true, deleted: result.rows[0] });
+});
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+7. STAT CARD SYNC:
+
+Real-time Recalculation (after status change or delete)
+
+const recalculateStats = (updatedReturns) => {
+  const stats = {
+    totalOwed: 0,
+    urgent: 0,
+    active: 0,
+    refunded: 0
+  };
+  
+  updatedReturns.forEach(r => {
+    const daysLeft = Math.ceil((new Date(r.return_deadline) - new Date()) / 86400000);
+    
+    // Total Owed: Pending + Shipped only
+    if (r.status === 'pending' || r.status === 'shipped') {
+      stats.totalOwed += parseFloat(r.purchase_price);
+    }
+    
+    // Urgent: ≤3 days AND not refunded
+    if (daysLeft <= 3 && daysLeft >= 0 && r.status !== 'refunded') {
+      stats.urgent++;
+    }
+    
+    // Active: Pending + Shipped
+    if (r.status === 'pending' || r.status === 'shipped') {
+      stats.active++;
+    }
+    
+    // Refunded count
+    if (r.status === 'refunded') {
+      stats.refunded++;
+    }
+  });
+  
+  return stats;
+};
+
+// Update state after any change
+const handleStatusChange = async (id, newStatus) => {
+  const response = await fetch(`/api/returns/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: newStatus })
+  });
+  
+  if (response.ok) {
+    const updated = await response.json();
+    const newReturns = returns.map(r => r.id === id ? updated.return : r);
+    setReturns(newReturns);
+    setStats(recalculateStats(newReturns)); // IMMEDIATE UPDATE
+    toast.success(`Marked as ${newStatus}`);
+  }
+};
+
+Optimistic Update Pattern:
+
+// Update UI immediately, rollback if API fails
+const optimisticUpdate = (id, changes) => {
+  const originalReturns = [...returns];
+  const newReturns = returns.map(r => r.id === id ? { ...r, ...changes } : r);
+  
+  setReturns(newReturns);
+  setStats(recalculateStats(newReturns));
+  
+  // Send to server
+  fetch(`/api/returns/${id}`, { 
+    method: 'PUT', 
+    body: JSON.stringify(changes) 
+  }).catch(() => {
+    // Rollback on failure
+    setReturns(originalReturns);
+    setStats(recalculateStats(originalReturns));
+    toast.error('Update failed');
+  });
+};
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+8. EMPTY STATES & TRANSITIONS:
+
+Empty Search Result:
+
+{filteredReturns.length === 0 && (
+  <div className="text-center py-12">
+    <SearchX className="mx-auto mb-4 text-gray-400" size={48} />
+    <h3 className="text-lg font-medium mb-2">No matches found</h3>
+    <p className="text-gray-500 mb-4">
+      Try adjusting your search or filters
+    </p>
+    <button 
+      onClick={resetFilters}
+      className="button-secondary"
+    >
+      Reset Filters
+    </button>
+  </div>
+)}
+
+Framer Motion Transitions:
+
+import { motion, AnimatePresence } from 'framer-motion';
+
+<AnimatePresence mode="popLayout">
+  {filteredReturns.map((return, index) => (
+    <motion.div
+      key={return.id}
+      layout
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ duration: 0.2, delay: index * 0.05 }}
+    >
+      <ReturnCard return={return} />
+    </motion.div>
+  ))}
+</AnimatePresence>
+
+Staggered Animation:
+
+    Cards appear with 50ms delay per card
+    Exit animation: Fade + slight scale down (0.95)
+    Layout animation: Smooth reflow when filters change
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+9. RESPONSIVE BEHAVIOR:
+
+Mobile (<768px):
+
+    Search bar: Full-width, larger touch target (min-h-12)
+    Filter chips: Horizontal scroll with momentum
+    Sort dropdown: Full-width below chips
+    Return cards: Stack vertically, full-width
+    Status select: Larger touch target
+    Delete icon: Larger (24px) with more padding
+
+Tablet (768px-1024px):
+
+    Search + Sort: Side-by-side (60/40 split)
+    Filter chips: Wrap to multiple rows
+    Cards: 2-column grid
+
+Desktop (>1024px):
+
+    Search + Sort: Side-by-side (70/30 split)
+    Filter chips: Single row, no scroll
+    Cards: 3-column grid
+    Hover states: Lift cards, show delete icon on hover only
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+10. SECURITY:
+
+    All endpoints verify req.user.id matches returns.user_id
+    Status updates: Validate enum (pending, shipped, refunded only)
+    Edit validations: Reuse Feature 1 rules (no future dates, price > 0)
+    Search: Use parameterized query with LIKE $1 to prevent SQL injection
+    Delete: Soft delete option (add deleted_at column) if you want undo later
+    Rate limiting: Covered by existing 100 req/15min
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DONE WHEN:
+
+✅ Search bar filters returns by store/item name in real-time ✅ Status chips show correct counts (Pending, Shipped, Refunded, Expired) ✅ "Expired" filter now works (shows returns with deadline < today) ✅ Sort dropdown changes card order (deadline/price/date) ✅ Click card → edit modal opens with pre-filled fields ✅ Edit modal reuses Feature 1 styling/validation ✅ Update return → modal closes, card updates, stats recalculate ✅ Status toggle: Pending → Shipped → Refunded (linear) ✅ Mark as Refunded → Total Owed decreases, card moves to "Refunded" filter ✅ Delete icon → confirmation modal appears ✅ Confirm delete → card removed, stats update immediately ✅ Empty search → "No matches found" with reset button ✅ Cards animate smoothly when filtered (fade in/out) ✅ Responsive: Mobile bottom sheet, desktop centered modal ✅ No console errors, all queries parameterized ✅ Theme toggle: All new UI elements match light/dark mode

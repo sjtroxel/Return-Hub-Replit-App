@@ -11,12 +11,20 @@ function getDaysRemaining(deadline: string): number {
 }
 
 function getUrgencyConfig(days: number) {
-  if (days <= 0) {
+  if (days < 0) {
     return {
       bg: "bg-destructive/10 dark:bg-destructive/20",
       text: "text-destructive",
       icon: XCircle,
       label: "Expired",
+    };
+  }
+  if (days === 0) {
+    return {
+      bg: "bg-red-500/10 dark:bg-red-500/20",
+      text: "text-red-600 dark:text-red-400",
+      icon: AlertTriangle,
+      label: "Due today",
     };
   }
   if (days <= 3) {

@@ -17,12 +17,14 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { useEffect, useRef, useCallback } from "react";
+import type { Return } from "@shared/schema";
 
 type FormValues = z.infer<typeof createReturnSchema>;
 
 interface AddReturnDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  returnToEdit?: Return | null;
 }
 
 function formatDeadline(dateString: string): string {
@@ -35,9 +37,10 @@ function formatDeadline(dateString: string): string {
   });
 }
 
-export function AddReturnDialog({ open, onOpenChange }: AddReturnDialogProps) {
+export function AddReturnDialog({ open, onOpenChange, returnToEdit }: AddReturnDialogProps) {
   const storeInputRef = useRef<HTMLInputElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const isEditMode = !!returnToEdit;
 
   const form = useForm<FormValues>({
     resolver: zodResolver(createReturnSchema),
@@ -50,6 +53,24 @@ export function AddReturnDialog({ open, onOpenChange }: AddReturnDialogProps) {
   });
 
   const watchDate = form.watch("purchaseDate");
+
+  useEffect(() => {
+    if (open && returnToEdit) {
+      form.reset({
+        storeName: returnToEdit.storeName,
+        itemName: returnToEdit.itemName || "",
+        purchasePrice: returnToEdit.purchasePrice,
+        purchaseDate: returnToEdit.purchaseDate,
+      });
+    } else if (open && !returnToEdit) {
+      form.reset({
+        storeName: "",
+        itemName: "",
+        purchasePrice: "",
+        purchaseDate: new Date().toISOString().split("T")[0],
+      });
+    }
+  }, [open, returnToEdit, form]);
 
   const createMutation = useMutation({
     mutationFn: async (data: FormValues) => {
@@ -72,8 +93,29 @@ export function AddReturnDialog({ open, onOpenChange }: AddReturnDialogProps) {
     },
   });
 
+  const updateMutation = useMutation({
+    mutationFn: async (data: FormValues) => {
+      const res = await apiRequest("PUT", `/api/returns/${returnToEdit!.id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/returns"] });
+      toast.success("Return updated successfully!");
+      onOpenChange(false);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update return");
+    },
+  });
+
+  const isPending = createMutation.isPending || updateMutation.isPending;
+
   const onSubmit = (data: FormValues) => {
-    createMutation.mutate(data);
+    if (isEditMode) {
+      updateMutation.mutate(data);
+    } else {
+      createMutation.mutate(data);
+    }
   };
 
   useEffect(() => {
@@ -140,10 +182,12 @@ export function AddReturnDialog({ open, onOpenChange }: AddReturnDialogProps) {
             className="text-lg font-semibold leading-none tracking-tight"
             data-testid="text-modal-title"
           >
-            Track a Return
+            {isEditMode ? "Edit Return" : "Track a Return"}
           </h2>
           <p className="text-sm text-muted-foreground">
-            Add a purchase you might need to return. We'll track the deadline for you.
+            {isEditMode
+              ? "Update the details for this return."
+              : "Add a purchase you might need to return. We'll track the deadline for you."}
           </p>
         </div>
 
@@ -255,17 +299,17 @@ export function AddReturnDialog({ open, onOpenChange }: AddReturnDialogProps) {
               </Button>
               <Button
                 type="submit"
-                disabled={createMutation.isPending}
+                disabled={isPending}
                 className="w-full md:w-auto"
                 data-testid="button-save-return"
               >
-                {createMutation.isPending ? (
+                {isPending ? (
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Saving...
+                    {isEditMode ? "Updating..." : "Saving..."}
                   </>
                 ) : (
-                  "Save Return"
+                  isEditMode ? "Update Return" : "Save Return"
                 )}
               </Button>
             </div>

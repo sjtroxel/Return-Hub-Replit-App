@@ -1,19 +1,13 @@
-import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useMemo, useEffect } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
 import { Redirect } from "wouter";
-import { ReturnCard, ReturnCardSkeleton } from "@/components/return-card";
+import { ReturnCard, ReturnCardSkeleton, getComputedStatus } from "@/components/return-card";
 import { AddReturnDialog } from "@/components/add-return-dialog";
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
 import { MobileNav } from "@/components/mobile-nav";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Plus,
   DollarSign,
@@ -22,10 +16,15 @@ import {
   TrendingUp,
   Search,
   RotateCcw,
+  SearchX,
+  ChevronDown,
+  Bell,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import type { Return } from "@shared/schema";
-import { getQueryFn } from "@/lib/queryClient";
+import { apiRequest, getQueryFn, queryClient } from "@/lib/queryClient";
+import toast from "react-hot-toast";
+import { startNotificationWatcher, checkAndSendNotifications } from "@/utils/notifications";
 
 function getDaysRemaining(deadline: string): number {
   const now = new Date();
@@ -41,12 +40,14 @@ function StatCard({
   value,
   subtext,
   colorClass,
+  urgentActive,
 }: {
   icon: any;
   label: string;
   value: string;
   subtext?: string;
   colorClass: string;
+  urgentActive?: boolean;
 }) {
   return (
     <Card className="p-4">
@@ -54,13 +55,25 @@ function StatCard({
         <div className={`flex items-center justify-center w-9 h-9 rounded-md ${colorClass}`}>
           <Icon className="w-4 h-4" />
         </div>
-        <div className="min-w-0">
-          <p className="text-xs text-muted-foreground">{label}</p>
-          <p className="text-lg font-display font-bold tracking-tight" data-testid={`text-stat-${label.toLowerCase().replace(/\s/g, "-")}`}>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-1">
+            <p className="text-xs text-muted-foreground">{label}</p>
+            {urgentActive && (
+              <div className="animate-pulse" data-testid="icon-urgent-alert">
+                <AlertTriangle className="w-4 h-4 text-red-500" />
+              </div>
+            )}
+          </div>
+          <p className={`text-lg font-display font-bold tracking-tight ${urgentActive ? "text-red-600 dark:text-red-400" : ""}`} data-testid={`text-stat-${label.toLowerCase().replace(/\s/g, "-")}`}>
             {value}
           </p>
           {subtext && (
             <p className="text-[10px] text-muted-foreground">{subtext}</p>
+          )}
+          {urgentActive && (
+            <p className="text-[10px] text-red-600 dark:text-red-400 font-medium" data-testid="text-urgent-action">
+              Requires immediate action
+            </p>
           )}
         </div>
       </div>
@@ -68,11 +81,39 @@ function StatCard({
   );
 }
 
+const FILTER_OPTIONS = ["All", "Pending", "Shipped", "Refunded", "Expired"] as const;
+type FilterOption = (typeof FILTER_OPTIONS)[number];
+
+const SORT_OPTIONS = [
+  { value: "deadline-asc", label: "Deadline (Soonest)" },
+  { value: "price-desc", label: "Price (Highest)" },
+  { value: "date-desc", label: "Date (Newest)" },
+] as const;
+
 export default function DashboardPage() {
   const { user, isLoading: authLoading } = useAuth();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [activeFilter, setActiveFilter] = useState<FilterOption>("All");
+  const [sortBy, setSortBy] = useState("deadline-asc");
+  const [editReturn, setEditReturn] = useState<Return | null>(null);
+  const [deleteReturn, setDeleteReturn] = useState<Return | null>(null);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [notificationsDismissed, setNotificationsDismissed] = useState(false);
+
+  useEffect(() => {
+    const savedPref = localStorage.getItem("notifications-enabled");
+    const dismissed = localStorage.getItem("notifications-dismissed");
+
+    if (dismissed === "true") {
+      setNotificationsDismissed(true);
+    }
+
+    if (savedPref === "granted") {
+      setNotificationsEnabled(true);
+    }
+  }, []);
 
   const {
     data: returns,
@@ -83,6 +124,56 @@ export default function DashboardPage() {
     enabled: !!user,
   });
 
+  useEffect(() => {
+    if (returns && returns.length > 0 && notificationsEnabled) {
+      const watcherId = startNotificationWatcher(returns);
+      return () => clearInterval(watcherId);
+    }
+  }, [returns, notificationsEnabled]);
+
+  useEffect(() => {
+    if (returns && returns.length > 0 && notificationsEnabled) {
+      const handleVisibilityChange = () => {
+        if (document.visibilityState === "visible") {
+          checkAndSendNotifications(returns);
+        }
+      };
+
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+      return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+    }
+  }, [returns, notificationsEnabled]);
+
+  const statusChangeMutation = useMutation({
+    mutationFn: async ({ id, status }: { id: string; status: string }) => {
+      const res = await apiRequest("PUT", `/api/returns/${id}`, { status });
+      return res.json();
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/returns"] });
+      toast.success(`Marked as ${variables.status}`);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update status");
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("DELETE", `/api/returns/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/returns"] });
+      toast.success("Return deleted");
+      setDeleteModalOpen(false);
+      setDeleteReturn(null);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to delete return");
+    },
+  });
+
   if (!authLoading && !user) {
     return <Redirect to="/login" />;
   }
@@ -90,30 +181,167 @@ export default function DashboardPage() {
   const stats = useMemo(() => {
     if (!returns) return { totalOwed: 0, urgent: 0, active: 0, refunded: 0 };
 
-    const pending = returns.filter((r) => r.status === "pending" || r.status === "shipped");
-    const totalOwed = pending.reduce((sum, r) => sum + parseFloat(r.purchasePrice), 0);
-    const urgent = pending.filter(
-      (r) => r.returnDeadline && getDaysRemaining(r.returnDeadline) <= 3 && getDaysRemaining(r.returnDeadline) > 0
-    ).length;
-    const active = pending.length;
-    const refunded = returns.filter((r) => r.status === "refunded").reduce(
-      (sum, r) => sum + parseFloat(r.purchasePrice), 0
-    );
+    let totalOwed = 0;
+    let urgent = 0;
+    let active = 0;
+    let refundedAmount = 0;
 
-    return { totalOwed, urgent, active, refunded };
+    returns.forEach((r) => {
+      const computed = getComputedStatus(r);
+
+      if (computed === "pending" || computed === "shipped") {
+        totalOwed += parseFloat(r.purchasePrice);
+        active++;
+
+        if (
+          r.returnDeadline &&
+          getDaysRemaining(r.returnDeadline) <= 3 &&
+          getDaysRemaining(r.returnDeadline) >= 0
+        ) {
+          urgent++;
+        }
+      }
+
+      if (computed === "refunded") {
+        refundedAmount += parseFloat(r.purchasePrice);
+      }
+    });
+
+    return { totalOwed, urgent, active, refunded: refundedAmount };
   }, [returns]);
 
-  const filteredReturns = useMemo(() => {
+  const filterCounts = useMemo(() => {
+    if (!returns) return { Pending: 0, Shipped: 0, Refunded: 0, Expired: 0 };
+
+    const counts = { Pending: 0, Shipped: 0, Refunded: 0, Expired: 0 };
+    returns.forEach((r) => {
+      const computed = getComputedStatus(r);
+      if (computed === "pending") counts.Pending++;
+      else if (computed === "shipped") counts.Shipped++;
+      else if (computed === "refunded") counts.Refunded++;
+      else if (computed === "expired") counts.Expired++;
+    });
+    return counts;
+  }, [returns]);
+
+  const sortedReturns = useMemo(() => {
     if (!returns) return [];
-    return returns.filter((r) => {
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let filtered = returns.filter((r) => {
       const matchesSearch =
         !searchQuery ||
         r.storeName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (r.itemName && r.itemName.toLowerCase().includes(searchQuery.toLowerCase()));
-      const matchesStatus = statusFilter === "all" || r.status === statusFilter;
-      return matchesSearch && matchesStatus;
+
+      if (!matchesSearch) return false;
+
+      if (activeFilter === "All") return true;
+      const computed = getComputedStatus(r);
+      return computed === activeFilter.toLowerCase();
     });
-  }, [returns, searchQuery, statusFilter]);
+
+    const withUrgency = filtered.map((r) => {
+      const computed = getComputedStatus(r);
+      let daysLeft = Infinity;
+      if (r.returnDeadline) {
+        const deadline = new Date(r.returnDeadline);
+        deadline.setHours(0, 0, 0, 0);
+        daysLeft = Math.ceil((deadline.getTime() - today.getTime()) / 86400000);
+      }
+      const isUrgent = daysLeft >= 0 && daysLeft <= 3 && computed !== "refunded" && computed !== "expired";
+      return { ...r, daysLeft, isUrgent };
+    });
+
+    withUrgency.sort((a, b) => {
+      if (a.isUrgent && b.isUrgent) {
+        return a.daysLeft - b.daysLeft;
+      }
+      if (a.isUrgent) return -1;
+      if (b.isUrgent) return 1;
+
+      if (sortBy === "deadline-asc") {
+        const da = a.returnDeadline ? new Date(a.returnDeadline).getTime() : Infinity;
+        const db = b.returnDeadline ? new Date(b.returnDeadline).getTime() : Infinity;
+        return da - db;
+      }
+      if (sortBy === "price-desc") {
+        return parseFloat(b.purchasePrice) - parseFloat(a.purchasePrice);
+      }
+      if (sortBy === "date-desc") {
+        return new Date(b.purchaseDate).getTime() - new Date(a.purchaseDate).getTime();
+      }
+      return 0;
+    });
+
+    return withUrgency;
+  }, [returns, searchQuery, activeFilter, sortBy]);
+
+  const urgentCount = useMemo(() => sortedReturns.filter((r) => r.isUrgent).length, [sortedReturns]);
+
+  const handleEditClick = (returnItem: Return) => {
+    setEditReturn(returnItem);
+    setDialogOpen(true);
+  };
+
+  const handleAddNew = () => {
+    setEditReturn(null);
+    setDialogOpen(true);
+  };
+
+  const handleDialogClose = (open: boolean) => {
+    setDialogOpen(open);
+    if (!open) {
+      setEditReturn(null);
+    }
+  };
+
+  const handleDeleteClick = (returnItem: Return) => {
+    setDeleteReturn(returnItem);
+    setDeleteModalOpen(true);
+  };
+
+  const handleConfirmDelete = () => {
+    if (deleteReturn) {
+      deleteMutation.mutate(deleteReturn.id);
+    }
+  };
+
+  const handleStatusChange = (id: string, newStatus: string) => {
+    statusChangeMutation.mutate({ id, status: newStatus });
+  };
+
+  const resetFilters = () => {
+    setSearchQuery("");
+    setActiveFilter("All");
+    setSortBy("deadline-asc");
+  };
+
+  const hasActiveFilters = searchQuery || activeFilter !== "All";
+
+  const handleEnableNotifications = async () => {
+    if (!("Notification" in window)) return;
+    const permission = await Notification.requestPermission();
+    localStorage.setItem("notifications-enabled", permission);
+    setNotificationsEnabled(permission === "granted");
+    if (permission !== "granted") {
+      toast.error("Notifications blocked. You can enable them in your browser settings.");
+    } else {
+      toast.success("Deadline reminders enabled!");
+    }
+  };
+
+  const handleDismissNotificationBanner = () => {
+    setNotificationsDismissed(true);
+    localStorage.setItem("notifications-dismissed", "true");
+  };
+
+  const showNotificationBanner =
+    !notificationsEnabled &&
+    !notificationsDismissed &&
+    "Notification" in (typeof window !== "undefined" ? window : {});
 
   return (
     <div className="flex flex-col h-full">
@@ -129,7 +357,7 @@ export default function DashboardPage() {
               </p>
             </div>
             <Button
-              onClick={() => setDialogOpen(true)}
+              onClick={handleAddNew}
               className="hidden lg:flex"
               data-testid="button-add-return"
             >
@@ -137,6 +365,37 @@ export default function DashboardPage() {
               Add Return
             </Button>
           </div>
+
+          {showNotificationBanner && (
+            <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md flex items-start gap-3" data-testid="banner-notifications">
+              <Bell className="text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5 w-5 h-5" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                  Get deadline reminders
+                </p>
+                <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+                  Enable browser notifications to get daily alerts when returns are expiring soon.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleEnableNotifications}
+                  className="text-sm font-medium text-blue-600 dark:text-blue-400"
+                  data-testid="button-enable-notifications"
+                >
+                  Enable
+                </button>
+                <button
+                  onClick={handleDismissNotificationBanner}
+                  className="text-sm text-blue-500/60 dark:text-blue-400/60"
+                  data-testid="button-dismiss-notifications"
+                  aria-label="Dismiss notification banner"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <StatCard
@@ -150,8 +409,9 @@ export default function DashboardPage() {
               icon={AlertTriangle}
               label="Urgent"
               value={String(stats.urgent)}
-              subtext="< 3 days left"
+              subtext={stats.urgent > 0 ? undefined : "< 3 days left"}
               colorClass="bg-red-500/10 dark:bg-red-500/20 text-red-500"
+              urgentActive={stats.urgent > 0}
             />
             <StatCard
               icon={Package}
@@ -169,29 +429,60 @@ export default function DashboardPage() {
             />
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                placeholder="Search returns..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-                data-testid="input-search"
-              />
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="relative flex-1 min-w-[200px]">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search by store or item name..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9"
+                  data-testid="input-search"
+                />
+              </div>
+              <div className="relative">
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="appearance-none bg-background border rounded-md px-3 pr-8 h-9 text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring"
+                  data-testid="select-sort"
+                >
+                  {SORT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+              </div>
             </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-[140px]" data-testid="select-filter-status">
-                <SelectValue placeholder="All statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="shipped">Shipped</SelectItem>
-                <SelectItem value="refunded">Refunded</SelectItem>
-                <SelectItem value="expired">Expired</SelectItem>
-              </SelectContent>
-            </Select>
+
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide" data-testid="filter-chips">
+              {FILTER_OPTIONS.map((filter) => {
+                const isActive = activeFilter === filter;
+                const count = filter !== "All" ? filterCounts[filter as keyof typeof filterCounts] : null;
+                return (
+                  <button
+                    key={filter}
+                    onClick={() => setActiveFilter(filter)}
+                    className={`whitespace-nowrap px-3 py-1.5 rounded-md text-sm font-medium transition-colors duration-200 ${
+                      isActive
+                        ? "bg-primary text-primary-foreground shadow-sm"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                    data-testid={`chip-${filter.toLowerCase()}`}
+                  >
+                    {filter}
+                    {count !== null && (
+                      <span className={`ml-1.5 text-xs ${isActive ? "opacity-80" : "opacity-60"}`}>
+                        ({count})
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {isLoading ? (
@@ -200,27 +491,40 @@ export default function DashboardPage() {
                 <ReturnCardSkeleton key={i} />
               ))}
             </div>
-          ) : filteredReturns.length === 0 ? (
+          ) : sortedReturns.length === 0 ? (
             <Card className="p-8 text-center">
               <div className="flex flex-col items-center gap-3">
                 <div className="flex items-center justify-center w-14 h-14 rounded-full bg-muted">
-                  <RotateCcw className="w-6 h-6 text-muted-foreground" />
+                  {hasActiveFilters ? (
+                    <SearchX className="w-6 h-6 text-muted-foreground" />
+                  ) : (
+                    <RotateCcw className="w-6 h-6 text-muted-foreground" />
+                  )}
                 </div>
                 <div>
                   <h3 className="font-semibold" data-testid="text-empty-title">
-                    {searchQuery || statusFilter !== "all"
-                      ? "No returns match your filters"
+                    {hasActiveFilters
+                      ? "No matches found"
                       : "No returns yet"}
                   </h3>
                   <p className="text-sm text-muted-foreground mt-1">
-                    {searchQuery || statusFilter !== "all"
-                      ? "Try adjusting your search or filter"
+                    {hasActiveFilters
+                      ? "Try adjusting your search or filters"
                       : "Track your first return to start protecting your money"}
                   </p>
                 </div>
-                {!searchQuery && statusFilter === "all" && (
+                {hasActiveFilters ? (
                   <Button
-                    onClick={() => setDialogOpen(true)}
+                    variant="outline"
+                    onClick={resetFilters}
+                    className="mt-2"
+                    data-testid="button-reset-filters"
+                  >
+                    Reset Filters
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={handleAddNew}
                     className="mt-2"
                     data-testid="button-empty-add-return"
                   >
@@ -231,20 +535,59 @@ export default function DashboardPage() {
               </div>
             </Card>
           ) : (
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {filteredReturns.map((returnItem, index) => (
-                <ReturnCard key={returnItem.id} returnItem={returnItem} index={index} />
-              ))}
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" data-testid="returns-grid">
+              {sortedReturns.map((returnItem, index) => {
+                const showDivider =
+                  index > 0 &&
+                  sortedReturns[index - 1].isUrgent &&
+                  !returnItem.isUrgent;
+
+                return (
+                  <div key={returnItem.id} className={showDivider ? "col-span-full contents" : "contents"}>
+                    {showDivider && (
+                      <div className="col-span-full my-4 flex items-center gap-4" data-testid="divider-urgent">
+                        <div className="flex-1 border-t-2 border-dashed border-gray-300 dark:border-gray-600" />
+                        <span className="text-xs font-medium text-muted-foreground whitespace-nowrap">
+                          Other Returns
+                        </span>
+                        <div className="flex-1 border-t-2 border-dashed border-gray-300 dark:border-gray-600" />
+                      </div>
+                    )}
+                    <ReturnCard
+                      returnItem={returnItem}
+                      index={index}
+                      isUrgent={returnItem.isUrgent}
+                      onEdit={handleEditClick}
+                      onDelete={handleDeleteClick}
+                      onStatusChange={handleStatusChange}
+                    />
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
       </div>
 
-      <MobileNav onAddReturn={() => setDialogOpen(true)} />
-      <AddReturnDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      <MobileNav onAddReturn={handleAddNew} />
+      <AddReturnDialog
+        open={dialogOpen}
+        onOpenChange={handleDialogClose}
+        returnToEdit={editReturn}
+      />
+      <DeleteConfirmDialog
+        open={deleteModalOpen}
+        onOpenChange={(open) => {
+          setDeleteModalOpen(open);
+          if (!open) setDeleteReturn(null);
+        }}
+        returnToDelete={deleteReturn}
+        onConfirm={handleConfirmDelete}
+        isPending={deleteMutation.isPending}
+      />
 
       <button
-        onClick={() => setDialogOpen(true)}
+        onClick={handleAddNew}
         className="fixed bottom-20 right-4 lg:hidden flex items-center justify-center w-14 h-14 rounded-full bg-accent text-accent-foreground shadow-lg z-40 transition-transform active:scale-95"
         data-testid="button-fab-add-return"
       >

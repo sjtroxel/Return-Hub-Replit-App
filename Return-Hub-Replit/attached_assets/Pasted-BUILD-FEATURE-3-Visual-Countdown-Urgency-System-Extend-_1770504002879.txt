@@ -1,0 +1,831 @@
+BUILD FEATURE 3: Visual Countdown & Urgency System
+
+Extend Feature 2's countdown badges with visceral urgency through draining progress bars, human-readable time, browser notifications, and auto-sorted urgent section.
+
+User Context: High-volume shoppers lose track of deadlines in the chaos → This system makes urgency impossible to ignore through visual cues and timely reminders → Protect every dollar from expiring
+
+What It Does:
+
+    Progress bars drain from 100% → 0% as deadline approaches (color-coded)
+    Time strings use human language ("Tomorrow at Midnight", "Due Friday")
+    Daily 9am browser notifications for red zone returns (≤3 days)
+    Urgent returns (≤3 days) auto-float to top with pulsing red border
+    Visual divider separates urgent from normal returns
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. PROGRESS BAR COMPONENT:
+
+Location: Inside return-card.tsx, below deadline badge
+
+Calculation Logic:
+
+const getProgressData = (purchaseDate: string, deadline: string, status: string) => {
+  if (status === 'refunded') {
+    return { percent: 100, color: 'gray', label: 'Refunded' };
+  }
+  
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const purchase = new Date(purchaseDate);
+  purchase.setHours(0, 0, 0, 0);
+  
+  const deadlineDate = new Date(deadline);
+  deadlineDate.setHours(0, 0, 0, 0);
+  
+  const totalDays = Math.ceil((deadlineDate - purchase) / 86400000); // Should be 30
+  const daysElapsed = Math.ceil((today - purchase) / 86400000);
+  const daysLeft = Math.ceil((deadlineDate - today) / 86400000);
+  
+  // If expired, show 0% (fully drained)
+  if (daysLeft < 0) {
+    return { percent: 0, color: 'red', label: `Expired ${Math.abs(daysLeft)} days ago` };
+  }
+  
+  // Calculate remaining percentage (100% = full, 0% = drained)
+  const percentRemaining = Math.max(0, Math.min(100, (daysLeft / totalDays) * 100));
+  
+  // Color based on percentage ELAPSED (inverse of remaining)
+  const percentElapsed = 100 - percentRemaining;
+  let color: string;
+  if (percentElapsed < 50) color = 'green';      // 0-50% through window
+  else if (percentElapsed < 75) color = 'yellow'; // 50-75%
+  else color = 'red';                             // 75-100%
+  
+  return { percent: percentRemaining, color, daysLeft };
+};
+
+Visual Implementation:
+
+const { percent, color, daysLeft } = getProgressData(return.purchase_date, return.return_deadline, return.status);
+
+<div className="mt-3">
+  {/* Progress bar track */}
+  <div className="relative h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+    {/* Animated fill bar */}
+    <div
+      className={`absolute inset-y-0 left-0 rounded-full transition-all duration-500 ease-out ${
+        color === 'green' ? 'bg-gradient-to-r from-green-400 to-green-500' :
+        color === 'yellow' ? 'bg-gradient-to-r from-yellow-400 to-orange-400' :
+        color === 'red' ? 'bg-gradient-to-r from-red-500 to-red-600' :
+        'bg-gray-400'
+      }`}
+      style={{ width: `${percent}%` }}
+    />
+  </div>
+  
+  {/* Human-readable time string */}
+  <p className={`text-xs mt-1 font-medium ${
+    color === 'red' ? 'text-red-600 dark:text-red-400' :
+    color === 'yellow' ? 'text-orange-600 dark:text-orange-400' :
+    'text-gray-600 dark:text-gray-400'
+  }`}>
+    {getHumanTime(daysLeft, return.return_deadline, return.status)}
+  </p>
+</div>
+
+Gradient Details:
+
+    Green: from-green-400 to-green-500 (fresh, plenty of time)
+    Yellow: from-yellow-400 to-orange-400 (warning gradient)
+    Red: from-red-500 to-red-600 (urgent, danger)
+    Smooth 500ms transition as percentage updates
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+2. HUMAN-READABLE TIME STRINGS:
+
+Helper Function:
+
+const getHumanTime = (daysLeft: number, deadline: string, status: string): string => {
+  if (status === 'refunded') return 'Refund received';
+  if (status === 'shipped') return 'In transit - awaiting refund';
+  
+  const deadlineDate = new Date(deadline);
+  
+  // Expired
+  if (daysLeft < 0) {
+    return `Expired ${Math.abs(daysLeft)} day${Math.abs(daysLeft) === 1 ? '' : 's'} ago`;
+  }
+  
+  // Due today
+  if (daysLeft === 0) {
+    return '⚠️ Due Today - Last Chance!';
+  }
+  
+  // Tomorrow
+  if (daysLeft === 1) {
+    return 'Tomorrow at Midnight';
+  }
+  
+  // 2-3 days (show day of week)
+  if (daysLeft <= 3) {
+    const dayOfWeek = deadlineDate.toLocaleDateString('en-US', { weekday: 'long' });
+    return `Due ${dayOfWeek} (${daysLeft} days)`;
+  }
+  
+  // 4-7 days (show day of week)
+  if (daysLeft <= 7) {
+    const dayOfWeek = deadlineDate.toLocaleDateString('en-US', { weekday: 'long' });
+    return `Due ${dayOfWeek}`;
+  }
+  
+  // 8-14 days (show date)
+  if (daysLeft <= 14) {
+    const dateStr = deadlineDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return `Ends ${dateStr} (${daysLeft} days)`;
+  }
+  
+  // 15+ days (show full date)
+  const dateStr = deadlineDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+  return `Ends ${dateStr}`;
+};
+
+Examples:
+
+    30 days → "Ends March 15"
+    10 days → "Ends Mar 5 (10 days)"
+    5 days → "Due Friday"
+    2 days → "Due Wednesday (2 days)"
+    1 day → "Tomorrow at Midnight"
+    0 days → "⚠️ Due Today - Last Chance!"
+    -3 days → "Expired 3 days ago"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+3. BROWSER NOTIFICATIONS:
+
+Permission Request (in dashboard.tsx on mount)
+
+import { useEffect, useState } from 'react';
+
+const Dashboard = () => {
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  
+  useEffect(() => {
+    // Check localStorage preference
+    const savedPref = localStorage.getItem('notifications-enabled');
+    
+    if (savedPref === 'granted') {
+      setNotificationsEnabled(true);
+    } else if (savedPref === null && 'Notification' in window) {
+      // First visit - ask permission
+      Notification.requestPermission().then(permission => {
+        localStorage.setItem('notifications-enabled', permission);
+        setNotificationsEnabled(permission === 'granted');
+      });
+    }
+  }, []);
+  
+  // ... rest of component
+};
+
+Notification Banner (if permission denied/not set)
+
+{!notificationsEnabled && 'Notification' in window && (
+  <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg flex items-start gap-3">
+    <Bell className="text-blue-600 flex-shrink-0 mt-0.5" size={20} />
+    <div className="flex-1">
+      <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+        Get deadline reminders
+      </p>
+      <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+        Enable browser notifications to get daily alerts when returns are expiring soon.
+      </p>
+    </div>
+    <button
+      onClick={async () => {
+        const permission = await Notification.requestPermission();
+        localStorage.setItem('notifications-enabled', permission);
+        setNotificationsEnabled(permission === 'granted');
+      }}
+      className="text-sm font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400"
+    >
+      Enable
+    </button>
+  </div>
+)}
+
+Background Notification Check (in separate file: `utils/)
+
+// utils/notifications.ts
+
+export interface UrgentReturn {
+  id: string;
+  store_name: string;
+  item_name: string;
+  purchase_price: number;
+  return_deadline: string;
+  daysLeft: number;
+}
+
+export const checkAndSendNotifications = async (returns: any[]) => {
+  // Check if notifications are enabled
+  const permission = localStorage.getItem('notifications-enabled');
+  if (permission !== 'granted' || !('Notification' in window)) {
+    return;
+  }
+  
+  // Check if we've already sent notification today
+  const lastSent = localStorage.getItem('notification-last-sent');
+  const today = new Date().toDateString();
+  
+  if (lastSent === today) {
+    return; // Already sent today
+  }
+  
+  // Check current time - only send between 9am-10am
+  const now = new Date();
+  const currentHour = now.getHours();
+  
+  if (currentHour !== 9) {
+    return; // Not 9am hour yet
+  }
+  
+  // Find urgent returns (≤3 days, not shipped/refunded)
+  const urgentReturns: UrgentReturn[] = returns
+    .filter(r => {
+      if (r.status === 'shipped' || r.status === 'refunded') return false;
+      
+      const deadline = new Date(r.return_deadline);
+      deadline.setHours(0, 0, 0, 0);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const daysLeft = Math.ceil((deadline - today) / 86400000);
+      return daysLeft >= 0 && daysLeft <= 3;
+    })
+    .map(r => {
+      const deadline = new Date(r.return_deadline);
+      deadline.setHours(0, 0, 0, 0);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const daysLeft = Math.ceil((deadline - today) / 86400000);
+      
+      return {
+        id: r.id,
+        store_name: r.store_name,
+        item_name: r.item_name,
+        purchase_price: r.purchase_price,
+        return_deadline: r.return_deadline,
+        daysLeft
+      };
+    })
+    .sort((a, b) => a.daysLeft - b.daysLeft); // Most urgent first
+  
+  if (urgentReturns.length === 0) {
+    return; // No urgent returns
+  }
+  
+  // Create grouped notification
+  const totalValue = urgentReturns.reduce((sum, r) => sum + r.purchase_price, 0);
+  const storeList = urgentReturns
+    .slice(0, 3)
+    .map(r => r.store_name)
+    .join(', ');
+  
+  const title = urgentReturns.length === 1
+    ? `⚠️ Don't lose your money!`
+    : `⚠️ ${urgentReturns.length} returns need attention!`;
+  
+  const body = urgentReturns.length === 1
+    ? `Your ${urgentReturns[0].store_name} return expires in ${urgentReturns[0].daysLeft} day${urgentReturns[0].daysLeft === 1 ? '' : 's'}. ($${urgentReturns[0].purchase_price})`
+    : `${storeList}${urgentReturns.length > 3 ? '...' : ''} - $${totalValue.toFixed(2)} at risk`;
+  
+  // Send notification
+  const notification = new Notification(title, {
+    body,
+    icon: '/favicon.ico', // ReturnHub logo
+    badge: '/favicon.ico',
+    tag: 'urgent-returns', // Prevents duplicates
+    requireInteraction: false,
+    silent: false,
+    data: { url: window.location.origin + '/dashboard' }
+  });
+  
+  // Click handler - open dashboard
+  notification.onclick = () => {
+    window.focus();
+    notification.close();
+  };
+  
+  // Mark as sent today
+  localStorage.setItem('notification-last-sent', today);
+};
+
+// Auto-check every hour
+export const startNotificationWatcher = (returns: any[]) => {
+  // Initial check
+  checkAndSendNotifications(returns);
+  
+  // Check every hour
+  const intervalId = setInterval(() => {
+    checkAndSendNotifications(returns);
+  }, 60 * 60 * 1000); // 1 hour
+  
+  return intervalId; // Return ID for cleanup
+};
+
+Integration in Dashboard:
+
+// dashboard.tsx
+import { startNotificationWatcher } from '../utils/notifications';
+
+useEffect(() => {
+  if (returns.length > 0) {
+    const watcherId = startNotificationWatcher(returns);
+    return () => clearInterval(watcherId); // Cleanup on unmount
+  }
+}, [returns]);
+
+Notification Examples:
+
+    Single urgent return: "⚠️ Don't lose your money! Your Amazon return expires in 2 days. ($89.99)"
+    Multiple urgent returns: "⚠️ 3 returns need attention! Amazon, Target, Best Buy - $234.48 at risk"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+4. URGENT SECTION (AUTO-SORT):
+
+Dashboard Sorting Logic:
+
+// dashboard.tsx
+const sortReturnsWithUrgency = (returns: any[]) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  // Calculate urgency for each return
+  const returnsWithUrgency = returns.map(r => {
+    const deadline = new Date(r.return_deadline);
+    deadline.setHours(0, 0, 0, 0);
+    const daysLeft = Math.ceil((deadline - today) / 86400000);
+    
+    return {
+      ...r,
+      daysLeft,
+      isUrgent: daysLeft >= 0 && daysLeft <= 3 && r.status !== 'refunded'
+    };
+  });
+  
+  // Sort: Urgent first (by days left), then normal (by selected sort)
+  return returnsWithUrgency.sort((a, b) => {
+    // Both urgent - sort by days left (ascending)
+    if (a.isUrgent && b.isUrgent) {
+      return a.daysLeft - b.daysLeft;
+    }
+    
+    // Only a is urgent - a comes first
+    if (a.isUrgent) return -1;
+    if (b.isUrgent) return 1;
+    
+    // Neither urgent - use normal sort logic
+    if (sortBy === 'deadline-asc') {
+      return new Date(a.return_deadline) - new Date(b.return_deadline);
+    } else if (sortBy === 'price-desc') {
+      return b.purchase_price - a.purchase_price;
+    } else if (sortBy === 'date-desc') {
+      return new Date(b.purchase_date) - new Date(a.purchase_date);
+    }
+    return 0;
+  });
+};
+
+const sortedReturns = sortReturnsWithUrgency(filteredReturns);
+const urgentCount = sortedReturns.filter(r => r.isUrgent).length;
+
+Visual Divider:
+
+<AnimatePresence mode="popLayout">
+  {sortedReturns.map((return, index) => {
+    const showDivider = index > 0 && 
+                        sortedReturns[index - 1].isUrgent && 
+                        !return.isUrgent;
+    
+    return (
+      <React.Fragment key={return.id}>
+        {showDivider && (
+          <div className="col-span-full my-6 flex items-center gap-4">
+            <div className="flex-1 border-t-2 border-dashed border-gray-300 dark:border-gray-600" />
+            <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+              Other Returns
+            </span>
+            <div className="flex-1 border-t-2 border-dashed border-gray-300 dark:border-gray-600" />
+          </div>
+        )}
+        
+        <motion.div
+          layout
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95 }}
+          transition={{ duration: 0.2, delay: index * 0.05 }}
+        >
+          <ReturnCard 
+            return={return} 
+            isUrgent={return.isUrgent}
+          />
+        </motion.div>
+      </React.Fragment>
+    );
+  })}
+</AnimatePresence>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5. URGENT CARD STYLING:
+
+Pulsing Red Border Animation:
+
+// return-card.tsx
+interface ReturnCardProps {
+  return: any;
+  isUrgent?: boolean;
+}
+
+const ReturnCard = ({ return, isUrgent = false }: ReturnCardProps) => {
+  return (
+    <div
+      className={`
+        return-card cursor-pointer transition-all
+        ${isUrgent 
+          ? 'ring-2 ring-red-500 dark:ring-red-400 animate-pulse-border shadow-lg shadow-red-500/20' 
+          : 'hover:shadow-lg'
+        }
+      `}
+      onClick={() => openEditModal(return)}
+    >
+      {/* Card content */}
+    </div>
+  );
+};
+
+Custom Pulse Animation (in tailwind.config.ts):
+
+// tailwind.config.ts
+export default {
+  theme: {
+    extend: {
+      animation: {
+        'pulse-border': 'pulse-border 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+      },
+      keyframes: {
+        'pulse-border': {
+          '0%, 100%': { 
+            opacity: '1',
+            boxShadow: '0 0 0 2px rgb(239 68 68 / 0.5)'
+          },
+          '50%': { 
+            opacity: '0.8',
+            boxShadow: '0 0 0 4px rgb(239 68 68 / 0.3)'
+          },
+        },
+      },
+    },
+  },
+};
+
+Visual Effect:
+
+    Urgent cards have a subtle red glow that pulses every 2 seconds
+    Box shadow expands/contracts to draw eye
+    Ring color matches red urgency theme
+    Opacity shifts create "breathing" effect
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+6. STATS CARD UPDATE:
+
+Add Urgency Indicator to "Urgent" Stat:
+
+// In stats-summary.tsx or dashboard
+<div className="stat-card">
+  <div className="flex items-center justify-between">
+    <h3 className="text-sm font-medium text-gray-500">Urgent</h3>
+    {urgentCount > 0 && (
+      <div className="animate-pulse">
+        <AlertTriangle className="text-red-500" size={18} />
+      </div>
+    )}
+  </div>
+  <p className={`text-3xl font-bold mt-2 ${
+    urgentCount > 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'
+  }`}>
+    {urgentCount}
+  </p>
+  {urgentCount > 0 && (
+    <p className="text-xs text-red-600 dark:text-red-400 mt-1 font-medium">
+      ⚠️ Requires immediate action
+    </p>
+  )}
+</div>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+7. RESPONSIVE BEHAVIOR:
+
+Mobile (<768px):
+
+    Progress bars: Full-width, 3px height (more visible)
+    Time strings: Text-sm, wrapped if needed
+    Notification banner: Sticky at top, collapsible
+    Urgent section divider: Shorter dash lines, smaller text
+
+Desktop (≥768px):
+
+    Progress bars: 2px height (subtle)
+    Time strings: Text-xs, single line
+    Pulsing border more prominent (4px ring vs 2px on mobile)
+    Divider spans full grid width
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+8. ACCESSIBILITY:
+
+Notifications:
+
+    Respect system Do Not Disturb settings
+    Provide clear opt-out in settings (localStorage + UI toggle)
+    Screen reader announcement when urgent section appears
+    ARIA labels on progress bars: aria-label="30% time remaining"
+
+Visual Indicators:
+
+    Progress bars have role="progressbar", aria-valuenow, aria-valuemin="0", aria-valuemax="100"
+    Color-blind safe: Use patterns/icons in addition to color
+    High contrast mode: Ensure red borders visible
+    Reduced motion: Disable pulse animation if prefers-reduced-motion
+
+Reduced Motion Support:
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-border {
+    animation: none;
+    box-shadow: 0 0 0 2px rgb(239 68 68 / 0.5);
+  }
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+9. EDGE CASES:
+
+Same-day purchases:
+
+    If purchase_date === today → progress bar shows 100% (full 30 days ahead)
+    Time string: "Ends March 15" (30 days from now)
+
+Expired returns:
+
+    Progress bar: 0% (fully drained), red
+    Time string: "Expired 3 days ago" (negative days)
+    No notification sent (already expired)
+    Not in urgent section (only 0-3 days remaining)
+
+Refunded returns:
+
+    Progress bar: 100%, gray (neutral color)
+    Time string: "Refund received"
+    No notification sent
+    Removed from urgent section
+
+Shipped returns:
+
+    Progress bar continues draining (refund window still active)
+    Time string: "In transit - awaiting refund"
+    Notification sent if ≤3 days until deadline
+    Included in urgent section (money still at risk)
+
+Notification edge case:
+
+    User enables notifications at 2pm → won't spam immediately
+    Will wait until next 9am to send first notification
+    If urgent returns get refunded same day → notification cancelled (not sent next day)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+10. TESTING CHECKLIST:
+
+**Visual Elements:**
+- [ ] Progress bar starts at 100% on Day 1, drains to 0% by deadline
+- [ ] Colors transition: Green → Yellow → Red at correct thresholds (50%, 75%)
+- [ ] Time strings match examples ("Tomorrow at Midnight", "Due Friday")
+- [ ] Expired returns show "Expired X days ago" with 0% bar
+- [ ] Refunded returns show gray bar with "Refund received"
+
+**Urgent Section:**
+- [ ] Returns with ≤3 days auto-float to top
+- [ ] Dashed divider appears between urgent and normal returns
+- [ ] Pulsing red border visible on urgent cards
+- [ ] Urgent section disappears when all returns marked shipped/refunded
+- [ ] Sort dropdown still works for non-urgent returns below divider
+
+**Browser Notifications:**
+- [ ] Permission banner shows on first visit
+- [ ] Clicking "Enable" triggers browser permission prompt
+- [ ] If denied, banner shows "enable in browser settings" message
+- [ ] Notification sends at 9am if urgent returns exist
+- [ ] Only one notification sent per day (even if page refreshed)
+- [ ] Clicking notification opens/focuses ReturnHub dashboard
+- [ ] Notification groups multiple urgent returns correctly
+- [ ] No notification sent if all returns shipped/refunded
+- [ ] No notification sent outside 9am hour
+
+**Edge Cases:**
+- [ ] Same-day purchase shows 100% bar, "Ends [30 days from now]"
+- [ ] Expired return (-5 days) shows 0% bar, "Expired 5 days ago"
+- [ ] Return due today (0 days) shows "⚠️ Due Today - Last Chance!"
+- [ ] Shipped return still shows draining progress bar
+- [ ] Urgent section handles 0 urgent returns gracefully (no divider)
+- [ ] Progress bar animation smooth when days decrement
+
+**Responsive:**
+- [ ] Mobile: Thicker progress bars (3px), larger pulsing borders
+- [ ] Desktop: Subtle progress bars (2px), refined animations
+- [ ] Notification banner responsive on all screen sizes
+- [ ] Time strings wrap properly on narrow screens
+
+**Accessibility:**
+- [ ] Progress bars have ARIA labels with percentage
+- [ ] Screen reader announces urgent section
+- [ ] Reduced motion: Pulse animation disabled
+- [ ] High contrast: Red borders still visible
+- [ ] Keyboard navigation: Can tab through urgent cards first
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**11. PERFORMANCE OPTIMIZATIONS:**
+
+**Efficient Re-renders:**
+```typescript
+// Memoize expensive calculations
+const urgentReturns = useMemo(() => {
+  return returns.filter(r => {
+    const daysLeft = calculateDaysLeft(r.return_deadline);
+    return daysLeft >= 0 && daysLeft <= 3 && r.status !== 'refunded';
+  });
+}, [returns]);
+
+// Debounce notification checks
+const debouncedNotificationCheck = useMemo(
+  () => debounce(checkAndSendNotifications, 1000),
+  []
+);
+
+Background Task Optimization:
+
+// Only run notification watcher when tab is visible
+useEffect(() => {
+  const handleVisibilityChange = () => {
+    if (document.visibilityState === 'visible') {
+      checkAndSendNotifications(returns);
+    }
+  };
+  
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+  return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+}, [returns]);
+
+Progress Bar Animation:
+
+/* Use transform for better performance */
+.progress-bar-fill {
+  transform-origin: left;
+  transform: scaleX(var(--progress-percent));
+  transition: transform 500ms cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform;
+}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+12. SETTINGS PANEL (Optional Enhancement):
+
+Notification Preferences UI:
+
+// In settings or dashboard header
+<Dialog>
+  <DialogTrigger>
+    <button className="text-sm text-gray-500 hover:text-gray-700">
+      <Settings size={18} />
+    </button>
+  </DialogTrigger>
+  
+  <DialogContent>
+    <DialogHeader>
+      <DialogTitle>Notification Settings</DialogTitle>
+    </DialogHeader>
+    
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-medium">Browser Notifications</p>
+          <p className="text-sm text-gray-500">
+            Daily alerts at 9am for urgent returns
+          </p>
+        </div>
+        <Switch
+          checked={notificationsEnabled}
+          onCheckedChange={async (checked) => {
+            if (checked) {
+              const permission = await Notification.requestPermission();
+              localStorage.setItem('notifications-enabled', permission);
+              setNotificationsEnabled(permission === 'granted');
+            } else {
+              localStorage.setItem('notifications-enabled', 'denied');
+              setNotificationsEnabled(false);
+            }
+          }}
+        />
+      </div>
+      
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-medium">Urgency Threshold</p>
+          <p className="text-sm text-gray-500">
+            Mark returns as urgent when deadline is within...
+          </p>
+        </div>
+        <select 
+          className="text-sm border rounded px-2 py-1"
+          value={urgencyThreshold}
+          onChange={(e) => setUrgencyThreshold(Number(e.target.value))}
+        >
+          <option value={1}>1 day</option>
+          <option value={3}>3 days</option>
+          <option value={5}>5 days</option>
+          <option value={7}>7 days</option>
+        </select>
+      </div>
+      
+      <div className="pt-4 border-t">
+        <button
+          onClick={() => {
+            localStorage.removeItem('notification-last-sent');
+            checkAndSendNotifications(returns);
+            toast.success('Test notification sent!');
+          }}
+          className="text-sm text-blue-600 hover:text-blue-700"
+        >
+          Send Test Notification
+        </button>
+      </div>
+    </div>
+  </DialogContent>
+</Dialog>
+
+Store in localStorage:
+
+const [urgencyThreshold, setUrgencyThreshold] = useState(() => {
+  const saved = localStorage.getItem('urgency-threshold');
+  return saved ? Number(saved) : 3; // Default 3 days
+});
+
+useEffect(() => {
+  localStorage.setItem('urgency-threshold', urgencyThreshold.toString());
+}, [urgencyThreshold]);
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+13. ANALYTICS TRACKING (Optional):
+
+Track Notification Effectiveness:
+
+// When notification sent
+const trackNotificationSent = (urgentCount: number, totalValue: number) => {
+  // Log to analytics service (e.g., PostHog, Mixpanel)
+  analytics.track('Urgent Notification Sent', {
+    urgent_count: urgentCount,
+    total_value: totalValue,
+    timestamp: new Date().toISOString()
+  });
+};
+
+// When user takes action after notification
+const trackNotificationAction = (action: 'opened' | 'dismissed' | 'status_updated') => {
+  analytics.track('Notification Action', {
+    action,
+    timestamp: new Date().toISOString()
+  });
+};
+
+Track Urgency Engagement:
+
+// When user clicks urgent card
+const trackUrgentCardClick = (daysLeft: number, value: number) => {
+  analytics.track('Urgent Card Clicked', {
+    days_left: daysLeft,
+    return_value: value
+  });
+};
+
+// When user marks urgent return as shipped
+const trackUrgentResolution = (daysLeft: number) => {
+  analytics.track('Urgent Return Resolved', {
+    days_remaining: daysLeft
+  });
+};
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DONE WHEN:
+
+✅ Progress bars drain from 100% → 0% with color transitions ✅ Time strings use human language ("Tomorrow at Midnight", "Due Friday") ✅ Green bar (0-50% elapsed), yellow (50-75%), red (75-100%) ✅ Browser notification permission banner appears on first visit ✅ Notification sends at 9am when urgent returns exist (≤3 days) ✅ Grouped notification lists all urgent returns (max 3 stores shown) ✅ Clicking notification opens dashboard ✅ Only one notification sent per day (tracked in localStorage) ✅ Urgent returns (≤3 days) auto-float to top of dashboard ✅ Dashed divider separates urgent from normal returns ✅ Urgent cards have pulsing red border animation ✅ Pulse animation respects prefers-reduced-motion ✅ "Urgent" stat card shows red text + alert icon when count > 0 ✅ Expired returns show 0% bar with "Expired X days ago" ✅ Refunded returns show gray bar with "Refund received" ✅ Shipped returns continue draining (refund window still active) ✅ Progress bars have ARIA labels for accessibility ✅ No console errors, smooth transitions on all devices ✅ Mobile: Thicker bars (3px), larger touch targets ✅ Desktop: Subtle bars (2px), refined hover states

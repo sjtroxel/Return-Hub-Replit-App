@@ -233,41 +233,96 @@ export async function registerRoutes(
       const { id } = req.params;
       const { storeName, itemName, purchasePrice, purchaseDate, status } = req.body;
 
+      const returnId = Array.isArray(id) ? id[0] : id;
+
+      const existing = await storage.getReturnById(returnId, req.user!.userId);
+      if (!existing) {
+        return res.status(404).json({ error: "Return not found" });
+      }
+
       const updateData: any = {};
-      if (storeName) updateData.storeName = sanitizeString(storeName);
-      if (itemName !== undefined) updateData.itemName = sanitizeString(itemName);
+
+      if (storeName !== undefined) {
+        if (!storeName || typeof storeName !== "string" || !storeName.trim()) {
+          return res.status(400).json({ error: "Store name is required" });
+        }
+        if (storeName.trim().length > 100) {
+          return res.status(400).json({ error: "Store name must be 100 characters or less" });
+        }
+        updateData.storeName = sanitizeString(storeName.trim());
+      }
+
+      if (itemName !== undefined) {
+        if (typeof itemName === "string" && itemName.trim().length > 200) {
+          return res.status(400).json({ error: "Item name must be 200 characters or less" });
+        }
+        updateData.itemName = itemName ? sanitizeString(itemName.trim()) : null;
+      }
+
       if (purchasePrice !== undefined) {
         const price = parseFloat(purchasePrice);
-        if (isNaN(price) || price < 0) {
-          return res.status(400).json({ message: "Price must be a positive number" });
+        if (isNaN(price) || price <= 0) {
+          return res.status(400).json({ error: "Price must be greater than 0" });
         }
         updateData.purchasePrice = price.toFixed(2);
       }
-      if (purchaseDate) {
+
+      if (purchaseDate !== undefined) {
         const date = new Date(purchaseDate);
-        if (isNaN(date.getTime()) || date > new Date()) {
-          return res.status(400).json({ message: "Invalid or future purchase date" });
+        if (isNaN(date.getTime())) {
+          return res.status(400).json({ error: "Invalid purchase date" });
+        }
+        const today = new Date();
+        today.setHours(23, 59, 59, 999);
+        if (date > today) {
+          return res.status(400).json({ error: "Future dates not allowed" });
         }
         updateData.purchaseDate = purchaseDate;
       }
-      if (status) {
-        const validStatuses = ["pending", "shipped", "refunded", "expired"];
+
+      if (status !== undefined) {
+        const validStatuses = ["pending", "shipped", "refunded"];
         if (!validStatuses.includes(status)) {
-          return res.status(400).json({ message: "Invalid status" });
+          return res.status(400).json({ error: "Invalid status" });
         }
+
+        const currentStatus = existing.status;
+        if (currentStatus === "refunded") {
+          return res.status(400).json({ error: "Cannot change status of a refunded return" });
+        }
+        if (currentStatus === "shipped" && status === "pending") {
+          return res.status(400).json({ error: "Cannot change shipped return back to pending" });
+        }
+
         updateData.status = status;
       }
 
-      const returnId = Array.isArray(id) ? id[0] : id;
       const ret = await storage.updateReturn(returnId, req.user!.userId, updateData);
       if (!ret) {
-        return res.status(404).json({ message: "Return not found" });
+        return res.status(404).json({ error: "Return not found" });
       }
 
-      return res.json(ret);
+      return res.json({ success: true, return: ret });
     } catch (error) {
       console.error("Update return error:", error);
-      return res.status(500).json({ message: "Internal server error" });
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  app.delete("/api/returns/:id", authMiddleware, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const returnId = Array.isArray(id) ? id[0] : id;
+
+      const ret = await storage.deleteReturn(returnId, req.user!.userId);
+      if (!ret) {
+        return res.status(404).json({ error: "Return not found" });
+      }
+
+      return res.json({ success: true, deleted: ret });
+    } catch (error) {
+      console.error("Delete return error:", error);
+      return res.status(500).json({ error: "Internal server error" });
     }
   });
 
