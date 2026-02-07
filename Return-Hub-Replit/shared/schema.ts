@@ -52,17 +52,21 @@ export const loginSchema = z.object({
 });
 
 export const createReturnSchema = z.object({
-  storeName: z.string().min(1, "Store name is required"),
-  itemName: z.string().optional(),
+  storeName: z.string().min(1, "Store name is required").max(100, "Store name must be 100 characters or less"),
+  itemName: z.string().max(200, "Item name must be 200 characters or less").optional(),
   purchasePrice: z.string().refine((val) => {
     const num = parseFloat(val);
-    return !isNaN(num) && num >= 0;
-  }, "Price must be a positive number"),
+    return !isNaN(num) && num > 0;
+  }, "Price must be greater than $0"),
   purchaseDate: z.string().refine((val) => {
     const d = new Date(val);
-    return !isNaN(d.getTime()) && d <= new Date();
-  }, "Date cannot be in the future"),
-  status: z.enum(["pending", "shipped", "refunded", "expired"]).optional(),
+    return !isNaN(d.getTime());
+  }, "Purchase date is required").refine((val) => {
+    const d = new Date(val);
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    return d <= today;
+  }, "Cannot select a future date"),
 });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;

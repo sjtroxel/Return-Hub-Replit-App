@@ -169,40 +169,62 @@ export async function registerRoutes(
 
   app.post("/api/returns", authMiddleware, async (req, res) => {
     try {
-      const { storeName, itemName, purchasePrice, purchaseDate, status } = req.body;
+      const { storeName, itemName, purchasePrice, purchaseDate } = req.body;
 
-      if (!storeName || !purchasePrice || !purchaseDate) {
-        return res.status(400).json({ message: "Store name, price, and purchase date are required" });
+      if (!storeName || typeof storeName !== "string" || !storeName.trim()) {
+        return res.status(400).json({ error: "Store name is required" });
+      }
+
+      if (storeName.trim().length > 100) {
+        return res.status(400).json({ error: "Store name must be 100 characters or less" });
+      }
+
+      if (itemName && typeof itemName === "string" && itemName.trim().length > 200) {
+        return res.status(400).json({ error: "Item name must be 200 characters or less" });
+      }
+
+      if (!purchasePrice && purchasePrice !== 0) {
+        return res.status(400).json({ error: "Purchase price is required" });
       }
 
       const price = parseFloat(purchasePrice);
-      if (isNaN(price) || price < 0) {
-        return res.status(400).json({ message: "Price must be a positive number" });
+      if (isNaN(price) || price <= 0) {
+        return res.status(400).json({ error: "Price must be greater than 0" });
+      }
+
+      const priceStr = price.toFixed(2);
+      if (priceStr.split(".")[1]?.length > 2) {
+        return res.status(400).json({ error: "Price cannot have more than 2 decimal places" });
+      }
+
+      if (!purchaseDate) {
+        return res.status(400).json({ error: "Purchase date is required" });
       }
 
       const date = new Date(purchaseDate);
-      if (isNaN(date.getTime()) || date > new Date()) {
-        return res.status(400).json({ message: "Invalid or future purchase date" });
+      if (isNaN(date.getTime())) {
+        return res.status(400).json({ error: "Invalid purchase date" });
       }
 
-      const validStatuses = ["pending", "shipped", "refunded", "expired"];
-      if (status && !validStatuses.includes(status)) {
-        return res.status(400).json({ message: "Invalid status" });
+      const today = new Date();
+      today.setHours(23, 59, 59, 999);
+      if (date > today) {
+        return res.status(400).json({ error: "Future dates not allowed" });
       }
 
       const ret = await storage.createReturn({
         userId: req.user!.userId,
-        storeName: sanitizeString(storeName),
-        itemName: itemName ? sanitizeString(itemName) : undefined,
-        purchasePrice: price.toFixed(2),
+        storeName: sanitizeString(storeName.trim()),
+        itemName: itemName ? sanitizeString(itemName.trim()) : undefined,
+        purchasePrice: priceStr,
         purchaseDate: purchaseDate,
-        status: status || "pending",
+        status: "pending",
       });
 
-      return res.status(201).json(ret);
+      return res.status(201).json({ success: true, return: ret });
     } catch (error) {
       console.error("Create return error:", error);
-      return res.status(500).json({ message: "Internal server error" });
+      return res.status(500).json({ error: "Failed to save return" });
     }
   });
 
@@ -236,7 +258,8 @@ export async function registerRoutes(
         updateData.status = status;
       }
 
-      const ret = await storage.updateReturn(id, req.user!.userId, updateData);
+      const returnId = Array.isArray(id) ? id[0] : id;
+      const ret = await storage.updateReturn(returnId, req.user!.userId, updateData);
       if (!ret) {
         return res.status(404).json({ message: "Return not found" });
       }

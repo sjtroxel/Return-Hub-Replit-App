@@ -1,0 +1,330 @@
+
+
+BUILD FEATURE 1: Manual Return Entry Form
+
+Match foundation structure and integrate with existing dashboard, FAB, and empty state.
+
+User Context: High-volume online shoppers need a friction-free way to log returns instantly → This form captures the essential data (store, amount, date) in under 30 seconds → Never lose track of a return again
+
+What It Does:
+
+    User clicks FAB or "Track your first return" button
+    Modal opens with focused form (auto-focus Store Name)
+    As user selects purchase date, preview shows calculated deadline
+    Submit saves to database, closes modal, refreshes dashboard with new card + updated stats
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. FORM COMPONENT:
+
+Location: src/components/ReturnEntryModal.jsx
+
+Triggers:
+
+    FAB click (existing orange "+" button in bottom-right)
+    Empty state "Track your first return" button
+
+Layout:
+
+    Desktop: Centered modal (max-w-md), glass-morphism backdrop (backdrop-blur-sm bg-black/20)
+    Mobile (<768px): Bottom sheet (slides up from bottom, rounded-t-2xl)
+    Close: Click outside backdrop OR "Cancel" button
+
+Fields:
+
+Store Name [required]
+├─ Placeholder: "e.g., Amazon, Target, Nordstrom"
+├─ Auto-focus on modal open
+├─ Validation: Cannot be empty
+└─ Error: "Store name is required" (red text below field)
+
+Item Name [optional]
+├─ Placeholder: "e.g., Winter Jacket, Headphones"
+└─ No validation
+
+Purchase Price [required]
+├─ Type: number, step="0.01", min="0.01"
+├─ Visual: "$" prefix inside input (position: absolute left)
+├─ Placeholder: "0.00"
+├─ Validation: Must be > 0
+└─ Error: "Price must be greater than $0" (red text below field)
+
+Purchase Date [required]
+├─ Type: date
+├─ Default: Today's date (YYYY-MM-DD)
+├─ Max: Today (cannot select future dates)
+├─ Validation: Cannot be future date
+├─ Error: "Cannot select a future date" (red text below field)
+└─ Live Preview: Below field, display:
+    "Return by: [Month Day, Year]"
+    Example: "Return by: March 15, 2025"
+    Formula: purchase_date + 30 days
+    Style: Text-sm, accent color (#ff6d0d)
+
+Buttons:
+
+    Cancel: Text button, left-aligned, gray text, closes modal without saving
+    Save Return: Primary button, navy (#000050), full-width on mobile, right-aligned on desktop
+    Loading state: "Saving..." with spinner icon (lucide-react Loader2)
+
+Responsive:
+
+    Desktop: Two-column buttons (Cancel left, Save right), inputs max-w-sm
+    Mobile: Stacked buttons (Cancel top, Save bottom), inputs full-width, larger touch targets (min-h-12)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+2. API ENDPOINT:
+
+POST /api/returns (protected route, JWT required)
+
+Request Body:
+
+{
+  "store_name": "Amazon",
+  "item_name": "Wireless Headphones",
+  "purchase_price": 89.99,
+  "purchase_date": "2025-01-15"
+}
+
+Validation (server-side):
+
+    store_name: Required, trim whitespace, max 100 chars, reject XSS patterns
+    item_name: Optional, trim whitespace, max 200 chars
+    purchase_price: Required, must be number > 0, max 2 decimal places
+    purchase_date: Required, must be valid date, cannot be future (compare to CURRENT_DATE)
+
+SQL Insert:
+
+INSERT INTO returns (
+  user_id,
+  store_name,
+  item_name,
+  purchase_price,
+  purchase_date,
+  status
+) VALUES ($1, $2, $3, $4, $5, 'pending')
+RETURNING *
+
+Notes:
+
+    user_id from JWT (req.user.id)
+    return_deadline auto-calculates via database (purchase_date + INTERVAL '30 days')
+    status defaults to 'pending'
+    Use parameterized query ($1, $2, etc.) to prevent SQL injection
+
+Response:
+
+    Success (201): { success: true, return: { id, store_name, item_name, purchase_price, purchase_date, return_deadline, status } }
+    Error (400): { error: "Future dates not allowed" } or { error: "Price must be greater than 0" }
+    Error (401): { error: "Unauthorized" } (if JWT invalid)
+    Error (500): { error: "Failed to save return" } (database error)
+
+Rate Limit: Covered by existing 100 requests/15min per user
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+3. FRONTEND INTEGRATION:
+
+State Management:
+
+// In Dashboard.jsx or App context
+const [isModalOpen, setIsModalOpen] = useState(false);
+const [returns, setReturns] = useState([]);
+
+// Trigger modal
+const openModal = () => setIsModalOpen(true);
+
+// After successful save
+const handleReturnAdded = (newReturn) => {
+  setReturns([newReturn, ...returns]); // Prepend to list
+  setIsModalOpen(false); // Close modal
+  toast.success("Return tracked successfully! 💸");
+};
+
+FAB Click Handler:
+
+// Existing FAB button
+<button onClick={openModal} className="fab-button">
+  <Plus size={24} />
+</button>
+
+Empty State Button:
+
+// In empty state component
+<button onClick={openModal} className="primary-button">
+  Track your first return
+</button>
+
+Data Refresh: After successful POST, update:
+
+    Returns list: Prepend new return to existing array
+    Stats cards: Recalculate totals:
+        Total Owed: Sum of all pending/shipped returns
+        Urgent: Count returns with ≤3 days remaining
+        Active: Count pending/shipped returns
+        Refunded: Count refunded returns (should not change)
+
+Optimistic Update (Optional but Recommended):
+
+// Calculate deadline on frontend while waiting for server response
+const deadline = new Date(purchaseDate);
+deadline.setDate(deadline.getDate() + 30);
+
+// Display immediately, replace with server response
+const tempReturn = {
+  id: 'temp-' + Date.now(),
+  store_name,
+  item_name,
+  purchase_price,
+  purchase_date: purchaseDate,
+  return_deadline: deadline.toISOString().split('T')[0],
+  status: 'pending'
+};
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+4. VALIDATION & ERROR HANDLING:
+
+Client-side (before POST):
+
+const errors = {};
+
+if (!storeName.trim()) {
+  errors.store_name = "Store name is required";
+}
+
+if (!purchasePrice || purchasePrice <= 0) {
+  errors.purchase_price = "Price must be greater than $0";
+}
+
+if (!purchaseDate) {
+  errors.purchase_date = "Purchase date is required";
+} else if (new Date(purchaseDate) > new Date()) {
+  errors.purchase_date = "Cannot select a future date";
+}
+
+if (Object.keys(errors).length > 0) {
+  setFieldErrors(errors); // Display inline errors
+  return; // Don't submit
+}
+
+Server-side (in API route):
+
+// Validate future date
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+const purchaseDate = new Date(req.body.purchase_date);
+
+if (purchaseDate > today) {
+  return res.status(400).json({ error: "Future dates not allowed" });
+}
+
+// Validate price
+if (req.body.purchase_price <= 0) {
+  return res.status(400).json({ error: "Price must be greater than 0" });
+}
+
+Error Display:
+
+    Inline errors: Red text (text-red-500), text-sm, below each field
+    Network errors: react-hot-toast error notification
+    Prevent double-submission: Disable "Save" button while loading
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5. DESIGN DETAILS:
+
+Modal Styling:
+
+/* Desktop */
+.modal-content {
+  max-width: 28rem; /* 448px */
+  background: theme-dependent (white in light, #252538 in dark);
+  border-radius: 1rem;
+  padding: 2rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+}
+
+/* Mobile (<768px) */
+.modal-content {
+  position: fixed;
+  bottom: 0;
+  width: 100%;
+  border-radius: 1rem 1rem 0 0;
+  animation: slide-up 0.3s ease-out;
+}
+
+@keyframes slide-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+Backdrop:
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(4px);
+  z-index: 40;
+}
+
+Price Input with $ Prefix:
+
+<div className="relative">
+  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">
+    $
+  </span>
+  <input
+    type="number"
+    step="0.01"
+    min="0.01"
+    className="pl-8 w-full ..." // Extra left padding for $
+    placeholder="0.00"
+  />
+</div>
+
+Deadline Preview:
+
+{purchaseDate && (
+  <p className="text-sm mt-1" style={{ color: '#ff6d0d' }}>
+    Return by: {formatDeadline(purchaseDate)}
+  </p>
+)}
+
+// Helper function
+const formatDeadline = (dateString) => {
+  const date = new Date(dateString);
+  date.setDate(date.getDate() + 30);
+  return date.toLocaleDateString('en-US', { 
+    month: 'long', 
+    day: 'numeric', 
+    year: 'numeric' 
+  });
+};
+
+Theme-Aware Colors:
+
+    Light mode: Inputs bg-white, border-gray-300, text-gray-900
+    Dark mode: Inputs bg-gray-800, border-gray-600, text-white
+    Focus ring: accent color (#ff6d0d)
+    Error text: text-red-500 (both modes)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+6. ACCESSIBILITY:
+
+    Modal uses role="dialog", aria-modal="true", aria-labelledby="modal-title"
+    Focus trap: Prevent tabbing outside modal while open
+    Escape key: Close modal
+    Labels: All inputs have proper <label for="..."> associations
+    Required fields: aria-required="true"
+    Error messages: aria-describedby links to error text
+    Mobile: Touch targets min 44px height
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DONE WHEN:
+
+✅ FAB and empty state button both trigger the modal ✅ Modal opens with Store Name auto-focused ✅ Deadline preview updates live as user selects purchase date ✅ Inline validation errors appear for empty/invalid fields ✅ Cannot submit with invalid data (client-side blocked) ✅ Server rejects future dates and negative prices (400 error) ✅ Successful save: Toast shows "Return tracked successfully! 💸" ✅ Modal closes after save, dashboard refreshes immediately ✅ New return card appears at top with correct urgency badge ✅ Stats cards update (Total Owed increases, Active count increases) ✅ Click outside modal or "Cancel" button closes without saving ✅ Responsive: Modal centered on desktop, bottom sheet on mobile ✅ Theme toggle: Modal matches light/dark mode ✅ No console errors, all API calls use parameterized queries ✅ Rate limiting allows form submissions (covered by 100/15min)
