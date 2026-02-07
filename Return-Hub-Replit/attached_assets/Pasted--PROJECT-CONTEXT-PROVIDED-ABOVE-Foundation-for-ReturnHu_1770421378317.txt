@@ -1,0 +1,115 @@
+[PROJECT CONTEXT PROVIDED ABOVE]
+
+Foundation for ReturnHub: A unified, urgency-driven return tracking dashboard that protects shoppers' money through automated deadline monitoring across all retailers.
+
+Structure only - no feature logic yet.
+
+Context: Online shoppers lose money to fragmented, confusing return processes → ReturnHub centralizes every return into one dashboard with countdown alerts → Never miss another return window
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. AUTH (Custom JWT): Full custom authentication - no Replit Auth
+
+    /api/auth/signup, /api/auth/login, /api/auth/logout
+    /api/auth/me (validate current session)
+    JWT_SECRET in Secrets, bcrypt (12 rounds)
+    JWT in HttpOnly cookie (7-day expiry, refresh on activity)
+    Protected routes check JWT middleware: if invalid/missing → 401 response
+    Frontend: Redirect to /login if 401, store auth state in React context
+    Login page: Email + password, "Create account" link
+    Signup page: Email + password + confirm password, validation (min 8 chars, email format)
+    Dashboard shows: "Welcome back, [email]!"
+    Row-level security: Verify req.user.id (from decoded JWT) matches returns.user_id on ALL database queries
+
+2. ROUTES (Placeholders): Manual Return Entry: POST /api/returns, PUT /api/returns/:id → "Coming Soon" (protected) Unified Dashboard: GET /dashboard → "Coming Soon" (protected, redirect to /login if unauthenticated) Return Details: GET /dashboard/:id → "Coming Soon" (protected) Public: /login, /signup (redirect to /dashboard if already authenticated)
+
+3. NAV: Desktop: Sidebar with ReturnHub logo, total refunds owed summary, nav links, theme toggle, user email, logout button Mobile: Bottom nav bar with icon-based links (lucide-react icons), hamburger menu for account/settings Active route highlighting with accent color. Smooth slide transitions between routes. Logout: Clear JWT cookie, redirect to /login, show toast "Logged out successfully"
+
+4. NOTIFICATIONS: react-hot-toast for global notifications:
+
+    Success: "Return saved!", "Logged in successfully", "Changes saved"
+    Error: "Invalid credentials", "Session expired", "Failed to save"
+    Warning: "Window closing in 2 days!"
+    Position: top-center on desktop, bottom-center on mobile
+    Duration: 3s success/warning, 4s errors
+    Custom styling: Match theme colors (light/dark mode aware)
+    Icons from lucide-react (CheckCircle, XCircle, AlertTriangle, Info)
+
+5. THEME: Light Mode: Bg #F8F9FA, Text #252525, Cards white with subtle shadow Dark Mode: Bg #1a1a2e, Text #e4e4e7, Cards #252538 with accent borders Shared: Main #000050 (primary buttons, CTAs), Accent #ff6d0d (countdown badges, urgency indicators, hover states)
+
+Tailwind CSS with custom design system:
+
+    Floating action button (FAB) for "+" with micro-interaction bounce
+    Card hover: subtle lift with shadow depth increase
+    Countdown badges: Pill-shaped with gradient (green→yellow→orange→red based on days remaining)
+    Smooth transitions: 200ms ease for theme toggle, 300ms for route changes
+    Respect prefers-color-scheme, persist user choice in localStorage
+    Glass-morphism effects on overlays/modals
+    Animated number counters for dollar amounts (count-up effect)
+
+Responsive Breakpoints:
+
+    Mobile-first (sm: 640px, md: 768px, lg: 1024px, xl: 1280px)
+    Touch targets min 44px on mobile
+    Stack cards vertically <768px, 2-column grid ≥768px, 3-column ≥1280px
+    Form inputs: full-width mobile, max-w-md centered desktop
+    Sidebar collapses to top bar <1024px
+    Header collapses to compact mode <640px
+
+6. DATABASE: PostgreSQL via Replit:
+
+users(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, theme_preference TEXT DEFAULT 'system', created_at TIMESTAMP DEFAULT NOW())
+
+returns(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, store_name TEXT NOT NULL, item_name TEXT, purchase_price DECIMAL(10,2) NOT NULL CHECK (purchase_price >= 0), purchase_date DATE NOT NULL CHECK (purchase_date <= CURRENT_DATE), return_deadline DATE GENERATED ALWAYS AS (purchase_date + INTERVAL '30 days') STORED, status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'shipped', 'refunded', 'expired')), created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())
+
+CREATE INDEX idx_returns_user_id ON returns(user_id); CREATE INDEX idx_returns_deadline ON returns(return_deadline);
+
+IMPORTANT: Use PostgreSQL's INTERVAL '30 days' for accurate date arithmetic - this correctly handles month boundaries and leap years.
+
+7. TEST USER SEEDING: On server initialization, automatically seed test data:
+
+    Check if user with email test@example.com exists
+    If NOT exists, create:
+        User: email='test@example.com', password='password123' (hashed with bcrypt)
+        Return 1: store_name='Amazon', item_name='Wireless Headphones', purchase_price=89.99, purchase_date=(today - 25 days), status='pending'
+        Return 2: store_name='Target', item_name='Winter Jacket', purchase_price=124.50, purchase_date=(today - 5 days), status='pending'
+        Return 3: store_name='Best Buy', item_name='USB-C Cable', purchase_price=19.99, purchase_date=(today - 28 days), status='pending'
+    This allows immediate visual verification: login as test@example.com / password123 to see populated dashboard
+
+8. SECURITY:
+
+    JWT_SECRET in Replit Secrets (min 32 chars, random)
+    CORS: Specific domain only, credentials: true
+    Rate limiting (express-rate-limit):
+        /api/auth/login: 5 attempts/15min per IP
+        /api/auth/signup: 3 attempts/hour per IP
+        All /api/* routes: 100 requests/15min per user
+    Helmet middleware (CSP, HSTS, X-Frame-Options, noSniff)
+    Input validation on all endpoints:
+        Reject future dates (purchase_date)
+        Reject negative prices
+        Sanitize strings (trim, escape HTML)
+        Block XSS patterns: <script>, javascript:, SQL injection strings
+    Parameterized queries only (pg library with $1, $2 placeholders)
+    Password requirements: Min 8 chars, no common passwords check
+    Session: JWT expires in 7 days, auto-refresh if <24h remaining
+
+9. DEPENDENCIES: Install via npm:
+
+    Frontend: react-hot-toast, lucide-react
+    Backend: express, pg, bcryptjs, jsonwebtoken, express-rate-limit, helmet, cors, cookie-parser, dotenv
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Stack: React 18+, Express 4+, PostgreSQL, Custom JWT Auth, Tailwind CSS, react-hot-toast, lucide-react
+
+Creative Elements:
+
+    Staggered card entrance animations (50ms delay per card)
+    Skeleton loaders during data fetch
+    Empty state: Friendly illustration with "Track your first return" CTA
+    Micro-interactions: Button press feedback, checkbox checkmarks, input focus rings
+    Typography: Inter for UI, Poppins for numbers/amounts (visual hierarchy)
+    Toast animations: Slide-in from top with gentle bounce
+
+Done when: ✓ Signup creates user, hashes password, returns JWT ✓ Login validates credentials, returns JWT in HttpOnly cookie ✓ Logout clears cookie, shows success toast ✓ Protected routes reject unauthenticated requests (401) ✓ /api/auth/me returns current user from valid JWT ✓ Test user (test@example.com / password123) auto-created with 3 sample returns ✓ Dashboard shows test user's returns with correct countdown badges (5 days, 25 days, 2 days remaining) ✓ All routes render with "Coming Soon" placeholders ✓ Theme toggle switches between light/dark modes smoothly ✓ Toast notifications appear for auth actions (login, logout, errors) ✓ Responsive layout perfect on mobile (375px), tablet (768px), desktop (1440px) ✓ No console errors, no layout shifts, touch targets meet accessibility standards ✓ lucide-react icons render in navigation ✓ return_deadline calculates correctly (purchase_date + 30 days exactly)
