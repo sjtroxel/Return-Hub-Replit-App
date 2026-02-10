@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { storage } from "./storage";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -85,6 +86,25 @@ app.use((req, res, next) => {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
   }
+
+  const CLEANUP_INTERVAL = 60 * 60 * 1000;
+  const GUEST_RETENTION_HOURS = 48;
+
+  const cleanupGuestAccounts = async () => {
+    try {
+      const cutoffTime = new Date(Date.now() - GUEST_RETENTION_HOURS * 60 * 60 * 1000);
+      const deletedCount = await storage.deleteGuestUsers(cutoffTime);
+      if (deletedCount > 0) {
+        log(`Cleaned up ${deletedCount} guest account(s)`);
+      }
+    } catch (error) {
+      console.error("Guest cleanup error:", error);
+    }
+  };
+
+  cleanupGuestAccounts();
+  setInterval(cleanupGuestAccounts, CLEANUP_INTERVAL);
+  log(`Guest account cleanup scheduled (every ${CLEANUP_INTERVAL / 60000} minutes)`);
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.

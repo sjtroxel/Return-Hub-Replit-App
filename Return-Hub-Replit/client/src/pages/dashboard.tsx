@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth";
-import { Redirect } from "wouter";
+import { Redirect, useLocation } from "wouter";
+import confetti from "canvas-confetti";
 import { ReturnCard, ReturnCardSkeleton, getComputedStatus } from "@/components/return-card";
 import { AddReturnDialog } from "@/components/add-return-dialog";
 import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
@@ -50,7 +51,7 @@ function StatCard({
   urgentActive?: boolean;
 }) {
   return (
-    <Card className="p-4">
+    <Card className="p-4 dark:backdrop-blur-xl dark:bg-white/5 dark:border-white/10">
       <div className="flex items-center gap-3">
         <div className={`flex items-center justify-center w-9 h-9 rounded-md ${colorClass}`}>
           <Icon className="w-4 h-4" />
@@ -92,6 +93,7 @@ const SORT_OPTIONS = [
 
 export default function DashboardPage() {
   const { user, isLoading: authLoading } = useAuth();
+  const [, setLocation] = useLocation();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterOption>("All");
@@ -101,6 +103,11 @@ export default function DashboardPage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [notificationsDismissed, setNotificationsDismissed] = useState(false);
+  const [demoBannerDismissed, setDemoBannerDismissed] = useState(
+    () => localStorage.getItem("demo-banner-dismissed") === "true"
+  );
+
+  const isGuest = (user as any)?.isGuest === true;
 
   useEffect(() => {
     const savedPref = localStorage.getItem("notifications-enabled");
@@ -151,7 +158,17 @@ export default function DashboardPage() {
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/returns"] });
-      toast.success(`Marked as ${variables.status}`);
+      if (variables.status === "refunded") {
+        confetti({
+          particleCount: 100,
+          spread: 80,
+          origin: { y: 0.6 },
+          colors: ["#22c55e", "#16a34a", "#4ade80", "#86efac"],
+        });
+        toast.success("Money secured! Refund tracked.");
+      } else {
+        toast.success(`Marked as ${variables.status}`);
+      }
     },
     onError: (error: Error) => {
       toast.error(error.message || "Failed to update status");
@@ -349,9 +366,20 @@ export default function DashboardPage() {
         <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-6">
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>
-              <h1 className="text-xl font-semibold tracking-tight" data-testid="text-welcome">
-                Welcome back{user?.email ? `, ${user.email.split("@")[0]}` : ""}!
-              </h1>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-xl font-semibold tracking-tight" data-testid="text-welcome">
+                  {isGuest ? "Welcome to ReturnHub!" : `Welcome back${user?.email ? `, ${user.email.split("@")[0]}` : ""}!`}
+                </h1>
+                {isGuest && (
+                  <span
+                    className="px-2 py-0.5 text-xs font-medium rounded-md bg-accent/15 text-accent border border-accent/30"
+                    role="status"
+                    data-testid="badge-demo-mode"
+                  >
+                    Demo Mode
+                  </span>
+                )}
+              </div>
               <p className="text-sm text-muted-foreground mt-0.5">
                 Track and manage your returns
               </p>
@@ -365,6 +393,38 @@ export default function DashboardPage() {
               Add Return
             </Button>
           </div>
+
+          {isGuest && !demoBannerDismissed && (
+            <div className="p-4 bg-accent/5 border border-accent/20 rounded-md flex items-start justify-between gap-3" data-testid="banner-demo">
+              <div className="flex-1">
+                <p className="text-sm font-medium">
+                  You're using Demo Mode
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  All data will be deleted after 48 hours. Create a real account to keep your returns.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => setLocation("/signup")}
+                  className="text-sm font-medium text-accent"
+                  data-testid="button-demo-signup"
+                >
+                  Sign Up
+                </button>
+                <button
+                  onClick={() => {
+                    localStorage.setItem("demo-banner-dismissed", "true");
+                    setDemoBannerDismissed(true);
+                  }}
+                  className="text-sm text-muted-foreground"
+                  data-testid="button-demo-dismiss"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
 
           {showNotificationBanner && (
             <div className="p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md flex items-start gap-3" data-testid="banner-notifications">

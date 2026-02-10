@@ -19,7 +19,7 @@ export function MobileNav({ onAddReturn }: { onAddReturn?: () => void }) {
     try {
       await logout();
       toast.success("Logged out successfully");
-      window.location.href = "/login";
+      window.location.href = "/";
     } catch {
       toast.error("Failed to log out");
     }

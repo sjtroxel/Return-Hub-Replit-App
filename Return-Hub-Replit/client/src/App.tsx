@@ -12,6 +12,7 @@ import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
 import SignupPage from "@/pages/signup";
 import DashboardPage from "@/pages/dashboard";
+import LandingPage from "@/pages/landing";
 import { Loader2 } from "lucide-react";
 
 function ProtectedLayout() {
@@ -74,7 +75,7 @@ function AppRouter() {
         ) : user ? (
           <Redirect to="/dashboard" />
         ) : (
-          <Redirect to="/login" />
+          <LandingPage />
         )}
       </Route>
       <Route path="/dashboard/:rest*" component={ProtectedLayout} />

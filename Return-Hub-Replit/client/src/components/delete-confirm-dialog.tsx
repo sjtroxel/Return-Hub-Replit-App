@@ -62,7 +62,7 @@ export function DeleteConfirmDialog({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full bg-background shadow-xl
+        className="w-full bg-background shadow-xl dark:backdrop-blur-xl dark:bg-white/5 dark:border dark:border-white/20
           fixed bottom-0 rounded-t-2xl p-6 animate-slide-up
           md:static md:max-w-sm md:rounded-lg md:animate-none md:mx-4"
         data-testid="delete-modal-content"

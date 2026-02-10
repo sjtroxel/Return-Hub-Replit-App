@@ -139,7 +139,7 @@ export function ReturnCard({ returnItem, index, isUrgent = false, onEdit, onDele
 
   return (
     <Card
-      className={`p-4 transition-all duration-200 ${onEdit ? "cursor-pointer" : ""} ${
+      className={`p-4 transition-all duration-200 dark:backdrop-blur-xl dark:bg-white/5 dark:border-white/10 ${onEdit ? "cursor-pointer" : ""} ${
         isUrgent
           ? "ring-2 ring-red-500 dark:ring-red-400 animate-pulse-border shadow-lg shadow-red-500/20"
           : "hover-elevate"

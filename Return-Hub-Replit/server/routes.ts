@@ -8,6 +8,7 @@ import {
   hashPassword,
   comparePassword,
   generateToken,
+  verifyToken,
   setAuthCookie,
   clearAuthCookie,
   authMiddleware,
@@ -46,6 +47,14 @@ export async function registerRoutes(
     windowMs: 60 * 60 * 1000,
     max: 5,
     message: { message: "Too many signup attempts, please try again later" },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const demoLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: { message: "Too many demo accounts created. Try again later." },
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -134,9 +143,96 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/auth/logout", (req, res) => {
+  app.post("/api/auth/logout", async (req, res) => {
+    try {
+      const token = req.cookies?.["returnhub_token"];
+      if (token) {
+        const payload = verifyToken(token);
+        if (payload) {
+          const user = await storage.getUserById(payload.userId);
+          if (user?.isGuest) {
+            await storage.deleteGuestReturns(user.id);
+            await storage.deleteUser(user.id);
+            console.log(`Cleaned up guest ${user.email} on logout`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Guest cleanup on logout error:", error);
+    }
     clearAuthCookie(res);
     return res.json({ message: "Logged out successfully" });
+  });
+
+  app.post("/api/auth/demo", demoLimiter, async (req, res) => {
+    try {
+      const guestEmail = `guest_${Date.now()}@demo.com`;
+      const dummyPasswordHash = await hashPassword("demo-password-unused");
+
+      const guestUser = await storage.createUser(guestEmail, dummyPasswordHash, true);
+
+      const seedReturns = [
+        {
+          storeName: "Amazon",
+          itemName: "Nike Sneakers",
+          purchasePrice: "120.00",
+          purchaseDate: new Date(Date.now() - 29 * 24 * 60 * 60 * 1000),
+          status: "pending",
+        },
+        {
+          storeName: "Target",
+          itemName: "Wireless Earbuds",
+          purchasePrice: "199.99",
+          purchaseDate: new Date(Date.now() - 26 * 24 * 60 * 60 * 1000),
+          status: "pending",
+        },
+        {
+          storeName: "Walmart",
+          itemName: "Kitchen Mixer",
+          purchasePrice: "249.00",
+          purchaseDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000),
+          status: "pending",
+        },
+        {
+          storeName: "Best Buy",
+          itemName: "Coffee Maker",
+          purchasePrice: "89.95",
+          purchaseDate: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
+          status: "refunded",
+        },
+        {
+          storeName: "Logitech",
+          itemName: "Gaming Mouse",
+          purchasePrice: "59.99",
+          purchaseDate: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000),
+          status: "pending",
+        },
+      ];
+
+      for (const returnData of seedReturns) {
+        await storage.createReturn({
+          userId: guestUser.id,
+          storeName: returnData.storeName,
+          itemName: returnData.itemName,
+          purchasePrice: returnData.purchasePrice,
+          purchaseDate: returnData.purchaseDate.toISOString().split("T")[0],
+          status: returnData.status,
+        });
+      }
+
+      const token = generateToken({ userId: guestUser.id, email: guestUser.email });
+      setAuthCookie(res, token);
+
+      return res.json({
+        id: guestUser.id,
+        email: guestUser.email,
+        isGuest: true,
+        themePreference: guestUser.themePreference,
+      });
+    } catch (error) {
+      console.error("Demo account creation failed:", error);
+      return res.status(500).json({ message: "Failed to create demo account" });
+    }
   });
 
   app.get("/api/auth/me", authMiddleware, async (req, res) => {
@@ -149,6 +245,7 @@ export async function registerRoutes(
       return res.json({
         id: user.id,
         email: user.email,
+        isGuest: user.isGuest || false,
         themePreference: user.themePreference,
       });
     } catch (error) {

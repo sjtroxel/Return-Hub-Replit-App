@@ -1,11 +1,12 @@
 import { db } from "./db";
 import { users, returns, type User, type Return } from "@shared/schema";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, lt } from "drizzle-orm";
 
 export interface IStorage {
   getUserById(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
-  createUser(email: string, passwordHash: string): Promise<User>;
+  createUser(email: string, passwordHash: string, isGuest?: boolean): Promise<User>;
+  deleteGuestUsers(cutoffDate: Date): Promise<number>;
   getReturnsByUserId(userId: string): Promise<Return[]>;
   getReturnById(id: string, userId: string): Promise<Return | undefined>;
   createReturn(data: {
@@ -41,12 +42,20 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
-  async createUser(email: string, passwordHash: string): Promise<User> {
+  async createUser(email: string, passwordHash: string, isGuest: boolean = false): Promise<User> {
     const [user] = await db
       .insert(users)
-      .values({ email, passwordHash })
+      .values({ email, passwordHash, isGuest })
       .returning();
     return user;
+  }
+
+  async deleteGuestUsers(cutoffDate: Date): Promise<number> {
+    const deleted = await db
+      .delete(users)
+      .where(and(eq(users.isGuest, true), lt(users.createdAt, cutoffDate)))
+      .returning();
+    return deleted.length;
   }
 
   async getReturnsByUserId(userId: string): Promise<Return[]> {

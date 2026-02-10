@@ -44,7 +44,8 @@ shared/
 ```
 
 ## Key Features
-- Custom JWT auth (signup/login/logout)
+- Custom JWT auth (signup/login/logout) + one-click demo mode
+- Landing page with hero, feature cards, Try Demo/Login/Sign Up CTAs
 - Dashboard with return tracking cards
 - Progress bars that drain from 100% → 0% as deadline approaches (green/yellow/red gradient)
 - Human-readable time strings ("Tomorrow at Midnight", "Due Friday", "Expired 3 days ago")
@@ -123,6 +124,16 @@ shared/
 - Row-level security: all queries filtered by user_id from JWT
 
 ## Recent Changes
+- Feature 4: Instant Demo Engine - Feb 10, 2026
+  - POST /api/auth/demo creates guest accounts with 5 auto-seeded returns
+  - Seeded returns: Nike Sneakers (urgent), Coffee Maker (refunded), Kitchen Mixer, Wireless Earbuds, Gaming Mouse
+  - JWT session auto-login, rate limiting (5 per 15min)
+  - Background cleanup every 60min for guest accounts >48 hours old
+  - Guest deletion on logout (only the current guest, not all guests)
+  - Landing page at / with hero, feature cards, Try Demo/Login/Sign Up CTAs
+  - Demo mode badge and dismissible banner on dashboard
+  - Guest email format: guest_{timestamp}@demo.com
+  - Database index idx_users_guest_created for efficient cleanup queries
 - Feature 3: Visual Countdown & Urgency System - Feb 7, 2026
   - Progress bars with gradient fills (green/yellow/red) draining from 100% → 0%
   - Human-readable time strings ("Tomorrow at Midnight", "Due Friday", etc.)

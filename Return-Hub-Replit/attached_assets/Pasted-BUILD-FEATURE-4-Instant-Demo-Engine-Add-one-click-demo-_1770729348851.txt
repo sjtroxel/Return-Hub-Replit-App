@@ -1,0 +1,716 @@
+BUILD FEATURE 4: Instant Demo Engine
+
+Add one-click demo mode with pre-seeded data, auto-cleanup, and dedicated landing page.
+
+User Context: Potential users are hesitant to sign up without seeing the product → This demo mode gives instant access with realistic data → Convert skeptics into engaged users in under 10 seconds
+
+What It Does:
+
+    New landing page at / with three options: Try Demo, Login, Sign Up
+    "Try Demo" creates guest account + 5 seeded returns (showing all urgency states)
+    Guest automatically logged in and redirected to dashboard
+    Background cleanup deletes guest accounts + data after 48 hours
+    Demo users see "Demo Mode" badge in header (optional visual indicator)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. DATABASE SCHEMA UPDATE:
+
+Add is_guest column to existing users table:
+
+ALTER TABLE users ADD COLUMN is_guest BOOLEAN DEFAULT false;
+
+Migration Script (in server/db.ts or new migration file):
+
+// Run on server initialization (check if column exists first)
+const addGuestColumn = async () => {
+  try {
+    await db.query(`
+      ALTER TABLE users 
+      ADD COLUMN IF NOT EXISTS is_guest BOOLEAN DEFAULT false
+    `);
+    console.log('✓ is_guest column added to users table');
+  } catch (error) {
+    console.error('Migration error:', error);
+  }
+};
+
+Updated Schema (in shared/schema.ts):
+
+export const insertUserSchema = z.object({
+  email: z.string().email(),
+  password_hash: z.string(),
+  is_guest: z.boolean().default(false),
+  theme_preference: z.enum(['system', 'light', 'dark']).default('system')
+});
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+2. DEMO API ROUTE:
+
+POST /api/auth/demo (in server/routes.ts)
+
+router.post('/api/auth/demo', async (req, res) => {
+  try {
+    // Generate unique guest email
+    const guestEmail = `guest_${Date.now()}@demo.com`;
+    const dummyPasswordHash = await bcrypt.hash('demo-password-unused', 12);
+    
+    // Create guest user
+    const userResult = await db.query(`
+      INSERT INTO users (email, password_hash, is_guest)
+      VALUES ($1, $2, true)
+      RETURNING id, email, is_guest, created_at
+    `, [guestEmail, dummyPasswordHash]);
+    
+    const guestUser = userResult.rows[0];
+    
+    // Seed 5 demo returns
+    const seedReturns = [
+      {
+        store_name: 'Amazon',
+        item_name: 'Nike Sneakers',
+        purchase_price: 120.00,
+        purchase_date: new Date(Date.now() - 29 * 24 * 60 * 60 * 1000), // 29 days ago (URGENT/RED)
+        status: 'pending'
+      },
+      {
+        store_name: 'Target',
+        item_name: 'Wireless Earbuds',
+        purchase_price: 199.99,
+        purchase_date: new Date(Date.now() - 26 * 24 * 60 * 60 * 1000), // 26 days ago (WARNING/YELLOW)
+        status: 'pending'
+      },
+      {
+        store_name: 'Walmart',
+        item_name: 'Kitchen Mixer',
+        purchase_price: 249.00,
+        purchase_date: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000), // 5 days ago (SAFE/GREEN)
+        status: 'pending'
+      },
+      {
+        store_name: 'Best Buy',
+        item_name: 'Coffee Maker',
+        purchase_price: 89.95,
+        purchase_date: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), // 10 days ago
+        status: 'refunded' // COMPLETED/GRAY
+      },
+      {
+        store_name: 'Logitech',
+        item_name: 'Gaming Mouse',
+        purchase_price: 59.99,
+        purchase_date: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000), // 15 days ago (MIDDLE/YELLOW)
+        status: 'pending'
+      }
+    ];
+    
+    // Insert returns with calculated deadlines
+    for (const returnData of seedReturns) {
+      const purchaseDateStr = returnData.purchase_date.toISOString().split('T')[0];
+      
+      await db.query(`
+        INSERT INTO returns (
+          user_id, 
+          store_name, 
+          item_name, 
+          purchase_price, 
+          purchase_date, 
+          status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [
+        guestUser.id,
+        returnData.store_name,
+        returnData.item_name,
+        returnData.purchase_price,
+        purchaseDateStr,
+        returnData.status
+      ]);
+    }
+    
+    // Create JWT session (match your existing auth pattern from Feature 1)
+    const token = jwt.sign(
+      { id: guestUser.id, email: guestUser.email, is_guest: true },
+      process.env.JWT_SECRET!,
+      { expiresIn: '7d' }
+    );
+    
+    // Set HttpOnly cookie
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+    
+    // Return success (frontend will redirect to /dashboard)
+    res.json({ 
+      success: true, 
+      user: { 
+        id: guestUser.id, 
+        email: guestUser.email, 
+        is_guest: true 
+      },
+      message: 'Demo account created successfully'
+    });
+    
+  } catch (error) {
+    console.error('Demo account creation failed:', error);
+    res.status(500).json({ error: 'Failed to create demo account' });
+  }
+});
+
+Key Details:
+
+    Email format: guest_${Date.now()}@demo.com (unique timestamp)
+    Password: Dummy hash (guests don't need login credentials)
+    is_guest: true flag for cleanup identification
+    JWT includes is_guest claim for frontend detection
+    Returns calculated: 29d ago (red urgency), 26d (yellow), 5d (green), 10d refunded (gray), 15d (yellow)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+3. LANDING PAGE:
+
+New File: client/src/pages/landing.tsx
+
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Loader2, ArrowRight, Shield, Clock, DollarSign } from 'lucide-react';
+import { toast } from 'react-hot-toast';
+
+export default function Landing() {
+  const [isDemoLoading, setIsDemoLoading] = useState(false);
+  const navigate = useNavigate();
+  
+  const handleDemoClick = async () => {
+    setIsDemoLoading(true);
+    
+    try {
+      const response = await fetch('/api/auth/demo', {
+        method: 'POST',
+        credentials: 'include' // Include cookies
+      });
+      
+      if (!response.ok) {
+        throw new Error('Demo creation failed');
+      }
+      
+      const data = await response.json();
+      
+      toast.success('Welcome to your demo dashboard!');
+      navigate('/dashboard');
+      
+    } catch (error) {
+      toast.error('Failed to create demo. Please try again.');
+      setIsDemoLoading(false);
+    }
+  };
+  
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 flex items-center justify-center p-4">
+      <div className="max-w-4xl w-full">
+        {/* Hero Section */}
+        <div className="text-center mb-12">
+          <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-blue-600 to-purple-600 rounded-2xl mb-6 shadow-xl">
+            <DollarSign className="text-white" size={40} />
+          </div>
+          
+          <h1 className="text-5xl font-bold text-gray-900 dark:text-white mb-4">
+            ReturnHub
+          </h1>
+          
+          <p className="text-xl text-gray-600 dark:text-gray-300 max-w-2xl mx-auto">
+            Never lose another dollar to a missed return window. 
+            Track every return in one urgency-driven dashboard.
+          </p>
+        </div>
+        
+        {/* Feature Cards */}
+        <div className="grid md:grid-cols-3 gap-6 mb-12">
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-lg">
+            <Clock className="text-orange-500 mb-3" size={32} />
+            <h3 className="font-semibold text-lg mb-2 text-gray-900 dark:text-white">
+              Live Countdown
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Visual progress bars drain as deadlines approach. Red alerts for urgent returns.
+            </p>
+          </div>
+          
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-lg">
+            <Shield className="text-blue-500 mb-3" size={32} />
+            <h3 className="font-semibold text-lg mb-2 text-gray-900 dark:text-white">
+              Smart Reminders
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Daily browser notifications at 9am for returns expiring within 3 days.
+            </p>
+          </div>
+          
+          <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-lg">
+            <DollarSign className="text-green-500 mb-3" size={32} />
+            <h3 className="font-semibold text-lg mb-2 text-gray-900 dark:text-white">
+              Money Tracker
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              See total refunds owed at a glance. Know exactly what's at risk.
+            </p>
+          </div>
+        </div>
+        
+        {/* CTA Buttons */}
+        <div className="bg-white dark:bg-gray-800 rounded-2xl p-8 shadow-2xl">
+          <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+            {/* Try Demo Button (Primary) */}
+            <button
+              onClick={handleDemoClick}
+              disabled={isDemoLoading}
+              className="
+                w-full sm:w-auto
+                px-8 py-4 
+                bg-gradient-to-r from-blue-600 to-purple-600 
+                text-white font-semibold rounded-xl 
+                shadow-lg hover:shadow-xl
+                transform hover:-translate-y-0.5 
+                transition-all duration-200
+                disabled:opacity-50 disabled:cursor-not-allowed
+                flex items-center justify-center gap-2
+              "
+            >
+              {isDemoLoading ? (
+                <>
+                  <Loader2 className="animate-spin" size={20} />
+                  Creating Demo...
+                </>
+              ) : (
+                <>
+                  Try Demo
+                  <ArrowRight size={20} />
+                </>
+              )}
+            </button>
+            
+            {/* Login Button (Secondary) */}
+            <button
+              onClick={() => navigate('/login')}
+              className="
+                w-full sm:w-auto
+                px-8 py-4 
+                bg-gray-100 dark:bg-gray-700 
+                text-gray-900 dark:text-white 
+                font-semibold rounded-xl 
+                hover:bg-gray-200 dark:hover:bg-gray-600
+                transition-colors
+              "
+            >
+              Login
+            </button>
+            
+            {/* Sign Up Button (Tertiary) */}
+            <button
+              onClick={() => navigate('/signup')}
+              className="
+                w-full sm:w-auto
+                px-8 py-4 
+                text-gray-600 dark:text-gray-400 
+                font-medium
+                hover:text-gray-900 dark:hover:text-white
+                transition-colors
+              "
+            >
+              Sign Up
+            </button>
+          </div>
+          
+          {/* Demo Notice */}
+          <p className="text-center text-sm text-gray-500 dark:text-gray-400 mt-6">
+            Demo data auto-deletes after 48 hours. No email required.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+Routing Update (in client/src/App.tsx or router config):
+
+import Landing from './pages/landing';
+
+// Add route
+<Routes>
+  <Route path="/" element={<Landing />} />
+  <Route path="/login" element={<Login />} />
+  <Route path="/signup" element={<Signup />} />
+  <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+</Routes>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+4. AUTO-CLEANUP BACKGROUND JOB:
+
+In server/index.ts (after app initialization):
+
+// Guest account cleanup (runs every 60 minutes)
+const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
+const GUEST_RETENTION_HOURS = 48;
+
+const cleanupGuestAccounts = async () => {
+  try {
+    const cutoffTime = new Date(Date.now() - GUEST_RETENTION_HOURS * 60 * 60 * 1000);
+    
+    const result = await db.query(`
+      DELETE FROM users
+      WHERE is_guest = true
+        AND created_at < $1
+      RETURNING id, email, created_at
+    `, [cutoffTime]);
+    
+    if (result.rows.length > 0) {
+      console.log(`🧹 Cleaned up ${result.rows.length} guest account(s):`);
+      result.rows.forEach(user => {
+        console.log(`   - ${user.email} (created ${user.created_at})`);
+      });
+    }
+  } catch (error) {
+    console.error('Guest cleanup error:', error);
+  }
+};
+
+// Run cleanup on server start (clear any stale guests immediately)
+
+cleanupGuestAccounts();
+
+// Schedule recurring cleanup every hour
+setInterval(cleanupGuestAccounts, CLEANUP_INTERVAL);
+
+console.log(`✓ Guest account cleanup scheduled (every ${CLEANUP_INTERVAL / 60000} minutes)`);
+
+Key Details:
+
+    Cascade Delete: When user deleted, PostgreSQL automatically deletes their returns (via ON DELETE CASCADE from foundation schema)
+    Cutoff Calculation: Date.now() - 48 * 60 * 60 * 1000 = 48 hours ago
+    Logging: Console shows which guest accounts were deleted (helpful for debugging)
+    Immediate Cleanup: Runs once on server start to clear any old guests from previous runs
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5. DEMO MODE BADGE (Optional Visual Indicator):
+
+In client/src/components/nav.tsx or dashboard.tsx header:
+
+import { useAuth } from '../contexts/auth-context'; // Your existing auth context
+
+const DashboardHeader = () => {
+  const { user } = useAuth();
+  
+  return (
+    <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center gap-3">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+        
+        {user?.is_guest && (
+          <span className="
+            px-3 py-1 
+            bg-orange-100 dark:bg-orange-900/30 
+            text-orange-700 dark:text-orange-400 
+            text-sm font-medium rounded-full
+            border border-orange-300 dark:border-orange-700
+          ">
+            Demo Mode
+          </span>
+        )}
+      </div>
+      
+      {/* Rest of header... */}
+    </div>
+  );
+};
+
+Demo Notice (optional dismissible banner):
+
+{user?.is_guest && !isDemoBannerDismissed && (
+  <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg flex items-start justify-between gap-3">
+    <div className="flex-1">
+      <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+        You're using Demo Mode
+      </p>
+      <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+        All data will be deleted after 48 hours. Create a real account to keep your returns.
+      </p>
+    </div>
+    <div className="flex gap-2">
+      <button
+        onClick={() => navigate('/signup')}
+        className="text-sm font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400"
+      >
+        Sign Up
+      </button>
+      <button
+        onClick={() => {
+          localStorage.setItem('demo-banner-dismissed', 'true');
+          setIsDemoBannerDismissed(true);
+        }}
+        className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400"
+      >
+        Dismiss
+      </button>
+    </div>
+  </div>
+)}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+6. AUTH CONTEXT UPDATE:
+
+In client/src/contexts/auth-context.tsx (or wherever you store user state):
+
+interface User {
+  id: string;
+  email: string;
+  is_guest?: boolean; // Add this field
+  theme_preference?: string;
+}
+
+// When fetching current user (GET /api/auth/me)
+const loadUser = async () => {
+  const response = await fetch('/api/auth/me', { credentials: 'include' });
+  if (response.ok) {
+    const data = await response.json();
+    setUser({
+      id: data.id,
+      email: data.email,
+      is_guest: data.is_guest || false // Include guest flag
+    });
+  }
+};
+
+Backend /api/auth/me route update:
+
+router.get('/api/auth/me', authenticateJWT, async (req, res) => {
+  const userId = req.user.id;
+  
+  const result = await db.query(
+    'SELECT id, email, is_guest, theme_preference FROM users WHERE id = $1',
+    [userId]
+  );
+  
+  if (result.rows.length === 0) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  
+  res.json(result.rows[0]); // Now includes is_guest field
+});
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+7. SECURITY CONSIDERATIONS:
+
+Rate Limiting for Demo Route:
+
+import rateLimit from 'express-rate-limit';
+
+const demoLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 demo accounts per IP per 15 min (prevent spam)
+  message: 'Too many demo accounts created. Try again later.'
+});
+
+router.post('/api/auth/demo', demoLimiter, async (req, res) => {
+  // ... existing demo logic
+});
+
+Prevent Demo Accounts from Changing Email/Password:
+
+// In PUT /api/users/:id or similar profile update routes
+router.put('/api/users/:id', authenticateJWT, async (req, res) => {
+  if (req.user.is_guest) {
+    return res.status(403).json({ 
+      error: 'Demo accounts cannot update profile. Create a real account to save data.' 
+    });
+  }
+  
+  // ... existing update logic
+});
+
+Logout Cleanup (optional immediate delete):
+
+router.post('/api/auth/logout', authenticateJWT, async (req, res) => {
+  // If guest, optionally delete immediately on logout (aggressive cleanup)
+  if (req.user.is_guest) {
+    await db.query('DELETE FROM users WHERE id = $1', [req.user.id]);
+    console.log(`🧹 Guest ${req.user.email} deleted on logout`);
+  }
+  
+  res.clearCookie('token');
+  res.json({ success: true });
+});
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+8. TESTING SCENARIOS:
+
+Demo Account Creation:
+
+    [ ] Click "Try Demo" on landing page
+    [ ] Verify loading state shows "Creating Demo..."
+    [ ] Redirects to /dashboard automatically (no login screen)
+    [ ] Dashboard shows 5 seeded returns:
+        Nike Sneakers (Amazon): Red urgency badge, pulsing border, 1 day left
+        Wireless Earbuds (Target): Yellow/orange badge, 4 days left
+        Kitchen Mixer (Walmart): Green badge, 25 days left
+        Coffee Maker (Best Buy): Gray badge, "Refund received"
+        Gaming Mouse (Logitech): Yellow badge, 15 days left
+    [ ] Stats cards calculate correctly:
+        Total Owed: $628.98 (Nike + Earbuds + Mixer + Mouse, excludes refunded Coffee Maker)
+        Urgent: 1 (Nike Sneakers only, ≤3 days)
+        Active: 4 (all except Coffee Maker)
+        Refunded: 1 (Coffee Maker)
+    [ ] "Demo Mode" badge visible in header
+
+Urgency System Integration:
+
+    [ ] Nike Sneakers auto-floats to top of dashboard (urgent section)
+    [ ] Pulsing red border animation visible on Nike card
+    [ ] "Other Returns" dashed divider appears below Nike card
+    [ ] Progress bar on Nike card shows ~97% drained (red gradient)
+    [ ] Human time text: "Due Tomorrow" or "Due Today - Last Chance!" (depending on time of test)
+
+Cleanup System:
+
+    [ ] Create demo account, note the guest_XXXX@demo.com email
+    [ ] Wait 60 minutes (or manually trigger cleanup function)
+    [ ] Verify guest still exists (created < 48h ago)
+    [ ] Manually set created_at to 50 hours ago in database
+    [ ] Wait for next cleanup cycle (or trigger manually)
+    [ ] Verify guest account deleted from users table
+    [ ] Verify all 5 returns deleted from returns table (cascade)
+
+Navigation Flow:
+
+    [ ] Visit / → See landing page with 3 feature cards
+    [ ] Click "Login" → Redirects to /login
+    [ ] Click "Sign Up" → Redirects to /signup
+    [ ] Click "Try Demo" → Creates account + redirects to /dashboard
+    [ ] From demo dashboard, click "Sign Up" in banner → Redirects to /signup
+
+Guest Restrictions:
+
+    [ ] Try to update profile as guest → Returns 403 error
+    [ ] Logout as guest → Account immediately deleted (if optional cleanup enabled)
+    [ ] Create new return as guest → Works normally
+    [ ] Edit/delete returns as guest → Works normally
+
+Edge Cases:
+
+    [ ] Create demo account while already logged in as real user → Should log out real user first, or show error
+    [ ] Refresh demo dashboard after 50 hours → Should redirect to login (account deleted)
+    [ ] Create 6 demo accounts from same IP in 15 min → 6th attempt rate-limited
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+9. RESPONSIVE DESIGN:
+
+Landing Page Breakpoints:
+
+Mobile (<640px):
+
+    Feature cards stack vertically
+    CTA buttons stack vertically (full-width)
+    Hero text: text-3xl instead of text-5xl
+    Icon size: 32px instead of 40px
+
+Tablet (640px-1024px):
+
+    Feature cards: 2-column grid, third card spans full width
+    CTA buttons: Side-by-side with smaller padding
+
+Desktop (>1024px):
+
+    Feature cards: 3-column grid
+    CTA buttons: Inline with generous spacing
+    Max width: max-w-4xl centers content
+
+Demo Badge:
+
+    Mobile: Smaller font (text-xs), tighter padding
+    Desktop: Standard size (text-sm)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+10. ACCESSIBILITY:
+
+Landing Page:
+
+    <main> landmark wraps content
+    Feature cards have aria-label describing purpose
+    "Try Demo" button: aria-label="Create demo account with sample data"
+    Loading state: aria-busy="true" when demo creating
+    Keyboard navigation: All buttons focusable, Enter key works
+
+Demo Badge:
+
+    role="status" for screen reader announcement
+    aria-live="polite" if shown conditionally
+
+Cleanup Logging:
+
+    Console output accessible to developers (not user-facing)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+11. PERFORMANCE OPTIMIZATIONS:
+
+Database Cleanup:
+
+-- Add index for faster guest cleanup queries
+CREATE INDEX IF NOT EXISTS idx_users_guest_created 
+ON users(is_guest, created_at) 
+WHERE is_guest = true;
+
+Efficient Seeding:
+
+// Batch insert returns (single query instead of 5)
+const values = seedReturns.map((r, i) => 
+  `($1, $${i*4+2}, $${i*4+3}, $${i*4+4}, $${i*4+5})`
+).join(', ');
+
+await db.query(`
+  INSERT INTO returns (user_id, store_name, item_name, purchase_price, purchase_date, status)
+  VALUES ${values}
+`, [
+  guestUser.id,
+  ...seedReturns.flatMap(r => [r.store_name, r.item_name, r.purchase_price, purchaseDateStr, r.status])
+]);
+
+Landing Page Code Splitting:
+
+// Lazy load landing page if it's heavy
+const Landing = lazy(() => import('./pages/landing'));
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+12. ANALYTICS TRACKING (Optional):
+
+// Track demo conversions
+const trackDemoCreated = () => {
+  analytics.track('Demo Account Created', {
+    timestamp: new Date().toISOString(),
+    entry_point: 'landing_page'
+  });
+};
+
+const trackDemoToSignup = () => {
+  analytics.track('Demo User Converted', {
+    timestamp: new Date().toISOString(),
+    demo_duration: Date.now() - demoStartTime
+  });
+};
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DONE WHEN:
+
+✅ is_guest BOOLEAN column exists in users table ✅ POST /api/auth/demo creates guest account with unique email ✅ 5 returns auto-seeded with correct dates (29d, 26d, 5d, 10d, 15d ago) ✅ Nike Sneakers shows red urgency (29 days = 1 day left) ✅ Coffee Maker marked as "refunded" (gray badge) ✅ Guest user logged in automatically (JWT cookie set) ✅ Redirects to /dashboard after demo creation ✅ Landing page (/) shows 3 feature cards + 3 CTA buttons ✅ "Demo Mode" badge visible in dashboard header for guests ✅ Background cleanup runs every 60 minutes ✅ Guests older than 48 hours deleted (cascade deletes returns) ✅ Console logs show cleanup activity ✅ Rate limiting prevents demo spam (5 per 15min per IP) ✅ Demo banner prompts guest to sign up (dismissible) ✅ Responsive design works on mobile/tablet/desktop ✅ No console errors, all queries parameterized ✅ Index added for efficient guest cleanup queries
+
+Feature 4 prompt ready!
